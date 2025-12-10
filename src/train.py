@@ -64,7 +64,7 @@ class CLIConfig:
 
     # Agent configuration
     max_turns: int | None = chz.field(
-        default=50,
+        default=None,
         doc="Max agent turns (None = unlimited)",
     )
     temperature: float = chz.field(default=0.7, doc="Sampling temperature")
