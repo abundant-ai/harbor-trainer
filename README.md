@@ -48,39 +48,30 @@ terminal-bench-2/
 
 ```bash
 python -m src.train \
-  model_name=Qwen/Qwen3-235B-A22B-Instruct-2507  \
-  tasks_dir=./terminal-bench-2 \
-  learning_rate=3e-4 \
-  batch_size=8 \
-  group_size=4 \
-  n_parallel_envs=1 \
-  max_tokens=4096 \
+  model_name=deepseek-ai/DeepSeek-V3.1  \
+  tasks_dir=./datasets/terminal-bench-2 \
+  learning_rate=2e-4 \
+  batch_size=1 \
+  group_size=16 \
+  n_parallel_envs=16 \
+  max_tokens=1024 \
   temperature=0.7 \
-  n_epochs=1 \
+  context_limit=32000 \
+  proactive_summarization_threshold=2000 \
+  enable_summarize=true \
+  n_epochs=2 \
+  num_substeps=4 \
+  remove_constant_reward_groups=true \
+  normalize_advantages_by_std=true \
   loss_fn=ppo \
   environment_type=docker \
-  wandb_project=train-qwen \
-  wandb_name=qwen-run
+  wandb_project=train-ds \
+  wandb_name=ds-run
 ```
 
-## Configuration
+or `bash run.sh`
 
-Key training parameters (see `src/train.py` for full list):
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `model_name` | required | Model to train (e.g., `Qwen/Qwen3-235B-A22B-Instruct-2507`) |
-| `tasks_dir` | required | Directory containing Harbor tasks |
-| `lora_rank` | 32 | LoRA rank for fine-tuning |
-| `learning_rate` | 5e-5 | Learning rate |
-| `batch_size` | 8 | Tasks per batch |
-| `group_size` | 4 | Rollouts per task (GRPO group size) |
-| `max_turns` | None | Max agent turns per episode (None = unlimited) |
-| `max_tokens` | 4096 | Max tokens per generation |
-| `temperature` | 0.7 | Sampling temperature |
-| `environment_type` | docker | Backend: `docker`, `modal`, `daytona`, `e2b`, `runloop` |
-| `n_parallel_envs` | 1 | Parallel environments (higher for cloud backends) |
-| `loss_fn` | importance_sampling | Loss: `importance_sampling` or `ppo` |
+Note: Tinker currently limits context length to 32K (see [tinker-cookbook issue #105](https://github.com/thinking-machines-lab/tinker-cookbook/issues/105)).
 
 ## Project Structure
 

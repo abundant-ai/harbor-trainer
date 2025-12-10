@@ -20,7 +20,7 @@ class CLIConfig:
     """CLI configuration for Terminus2 RL training."""
 
     # Required
-    model_name: str = chz.field(doc="Model name (e.g., 'meta-llama/Llama-3.1-8B')")
+    model_name: str = chz.field(doc="Model name (e.g., 'deepseek-ai/DeepSeek-V3.1')")
     tasks_dir: str = chz.field(doc="Directory containing Harbor tasks")
 
     # Directories
@@ -35,14 +35,14 @@ class CLIConfig:
     lora_rank: int = chz.field(default=32, doc="LoRA rank")
 
     # Training hyperparameters
-    learning_rate: float = chz.field(default=5e-5, doc="Learning rate")
-    batch_size: int = chz.field(default=8, doc="Tasks per batch")
-    group_size: int = chz.field(default=4, doc="Rollouts per task (GRPO group size)")
+    learning_rate: float = chz.field(default=5e-4, doc="Learning rate")
+    batch_size: int = chz.field(default=1, doc="Tasks per batch")
+    group_size: int = chz.field(default=8, doc="Rollouts per task (GRPO group size)")
     n_epochs: int = chz.field(default=1, doc="Number of epochs")
 
     # RL hyperparameters
     loss_fn: Literal["importance_sampling", "ppo"] = chz.field(
-        default="importance_sampling",
+        default="ppo",
         doc="Loss function: 'importance_sampling' (REINFORCE) or 'ppo'",
     )
     num_substeps: int = chz.field(
@@ -53,12 +53,32 @@ class CLIConfig:
         default=False,
         doc="Remove groups where all rollouts have the same reward",
     )
+    normalize_advantages_by_std: bool = chz.field(
+        default=True,
+        doc="Normalize advantages by standard deviation (GRPO-style)",
+    )
+    kl_penalty_coef: float = chz.field(
+        default=0.0,
+        doc="KL penalty coefficient for regularization against base model (0 = disabled)",
+    )
 
     # Agent configuration
-    max_turns: int | None = chz.field(default=None, doc="Max agent turns (None = unlimited)")
+    max_turns: int | None = chz.field(
+        default=None,
+        doc="Max agent turns (None = unlimited)",
+    )
     temperature: float = chz.field(default=0.7, doc="Sampling temperature")
-    max_tokens: int = chz.field(default=4096, doc="Max tokens per generation")
-    context_limit: int = chz.field(default=128000, doc="Model context limit")
+    max_tokens: int = chz.field(default=1024, doc="Max tokens per generation")
+    context_limit: int = chz.field(default=32000, doc="Model context limit")
+
+    enable_summarize: bool = chz.field(
+        default=True,
+        doc="Enable context summarization when context is full (matches Terminus 2 eval)",
+    )
+    proactive_summarization_threshold: int = chz.field(
+        default=8000,
+        doc="Trigger proactive summarization when free tokens fall below this threshold",
+    )
 
     # Environment configuration
     environment_type: Literal["docker", "daytona", "modal", "e2b", "runloop"] = chz.field(
@@ -75,7 +95,7 @@ class CLIConfig:
         ),
     )
     n_parallel_envs: int = chz.field(
-        default=1,
+        default=8,
         doc="Parallel environments. Keep low (1-2) for docker, higher for cloud",
     )
     trial_timeout_sec: float | None = chz.field(
@@ -117,6 +137,7 @@ async def run_training(config: CLIConfig) -> None:
     logger.info(f"Environment: {config.environment_type} (n_parallel={config.n_parallel_envs})")
     logger.info(f"Batch size: {config.batch_size}, Group size: {config.group_size}")
     logger.info(f"Loss function: {config.loss_fn}, Substeps: {config.num_substeps}")
+    logger.info(f"Context summarization: {config.enable_summarize} (threshold: {config.proactive_summarization_threshold})")
     logger.info("=" * 60)
 
     trainer_config = TrainerConfig(
@@ -132,10 +153,14 @@ async def run_training(config: CLIConfig) -> None:
         loss_fn=config.loss_fn,
         num_substeps=config.num_substeps,
         remove_constant_reward_groups=config.remove_constant_reward_groups,
+        normalize_advantages_by_std=config.normalize_advantages_by_std,
+        kl_penalty_coef=config.kl_penalty_coef,
         max_turns=config.max_turns,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         context_limit=config.context_limit,
+        enable_summarize=config.enable_summarize,
+        proactive_summarization_threshold=config.proactive_summarization_threshold,
         environment_type=config.environment_type,
         environment_kwargs=_parse_kwargs(config.environment_kwargs),
         n_parallel_envs=config.n_parallel_envs,
@@ -153,10 +178,29 @@ async def run_training(config: CLIConfig) -> None:
 
 def main() -> None:
     """Entry point for training."""
+    # Set root logger to WARNING to suppress verbose library logs
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    
+    # Enable INFO logs only for our own modules
+    logging.getLogger("__main__").setLevel(logging.INFO)
+    logging.getLogger("src.terminus2_trainer").setLevel(logging.INFO)
+    logging.getLogger("src.tinker_llm").setLevel(logging.INFO)
+    
+    # Keep tinker-cookbook at INFO for training metrics
+    logging.getLogger("tinker_cookbook.utils.ml_log").setLevel(logging.INFO)
+    
+    # Suppress verbose Harbor logs (Docker/environment operations)
+    # Harbor uses its own logger system - suppress all Harbor loggers
+    logging.getLogger("harbor").setLevel(logging.WARNING)
+    logging.getLogger("harbor.utils.logger").setLevel(logging.WARNING)
+    
+    # Also suppress all child loggers that might be created by Harbor
+    for name in list(logging.Logger.manager.loggerDict.keys()):
+        if name.startswith("harbor"):
+            logging.getLogger(name).setLevel(logging.WARNING)
 
     config = chz.entrypoint(CLIConfig)
     asyncio.run(run_training(config))

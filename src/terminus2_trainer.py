@@ -55,9 +55,9 @@ class TrainerConfig:
     lora_rank: int = 32
 
     # Training hyperparameters
-    learning_rate: float = 5e-5
-    batch_size: int = 8  # Tasks per batch
-    group_size: int = 4  # Rollouts per task (GRPO group size)
+    learning_rate: float = 5e-4
+    batch_size: int = 1  # Tasks per batch
+    group_size: int = 8  # Rollouts per task (GRPO group size)
     n_epochs: int = 1
 
     # RL hyperparameters
@@ -69,19 +69,23 @@ class TrainerConfig:
     normalize_advantages_by_std: bool = True  # Divide advantages by std
 
     # KL regularization against reference model
-    kl_penalty_coef: float = 0.001  # KL penalty coefficient (0 = disabled)
+    kl_penalty_coef: float = 0.0  # KL penalty coefficient (0 = disabled, default off due to multi-turn bugs)
 
     # Agent configuration
     max_turns: int | None = None
     temperature: float = 0.7
-    max_tokens: int = 4096
-    context_limit: int = 128000
+    max_tokens: int = 1024
+    context_limit: int = 32000  # required by Tinker :(
     trial_timeout_sec: float | None = None
+
+    # Context summarization (enables parity with Terminus 2 evaluation)
+    enable_summarize: bool = True  # Enable context summarization when context is full
+    proactive_summarization_threshold: int = 2000  # Trigger summarization when free tokens below this
 
     # Environment configuration
     environment_type: str = "docker"
     environment_kwargs: dict[str, Any] = field(default_factory=dict)
-    n_parallel_envs: int = 1
+    n_parallel_envs: int = 8
 
     # Logging
     wandb_project: str | None = None
@@ -157,11 +161,12 @@ def build_datums_from_trials(
     """
     Build tinker.Datum directly from TrialResult rollout_details.
     
-    Creates datums with:
-    - target_tokens: The completion tokens to predict
-    - logprobs: Log probabilities from sampling (for importance sampling/PPO)
-    - advantages: Per-token advantages (normalized by turn count)
-    - mask: All 1s for completion tokens (we train on all assistant output)
+    Tinker expects causal LM format where all arrays have the same length:
+    - model_input: full_sequence[:-1] (prompt + completion, minus last token)
+    - target_tokens: full_sequence[1:] (shifted by 1 position)
+    - logprobs: same length, with 0s for prompt positions
+    - advantages: same length, with 0s for prompt positions
+    - mask: 0s for prompt positions, 1s for completion positions
     """
     datums: list[tinker.Datum] = []
 
@@ -179,9 +184,14 @@ def build_datums_from_trials(
             if n_turns == 0:
                 continue
 
-            # Normalize advantage by turn count so each episode contributes
-            # equally regardless of how many turns it took
-            normalized_advantage = advantage / n_turns
+            # Calculate total completion tokens for this episode
+            total_completion_tokens = sum(len(tokens) for tokens in completion_tokens)
+            if total_completion_tokens == 0:
+                continue
+
+            # Normalize advantage by total completion tokens so each episode contributes
+            # equally regardless of how many tokens it generated
+            normalized_advantage = advantage / total_completion_tokens
 
             # Build one datum per turn
             for turn_idx in range(n_turns):
@@ -197,25 +207,50 @@ def build_datums_from_trials(
                 if not turn_completion or not turn_logprobs:
                     continue
 
-                n_tokens = len(turn_completion)
-                token_advantages = [normalized_advantage] * n_tokens
-                # Mask: all 1s because completion_token_ids are pure model output
-                token_mask = [1.0] * n_tokens
+                # Concatenate prompt + completion to form full sequence
+                full_sequence = turn_prompt + turn_completion
+                
+                if len(full_sequence) < 2:
+                    continue
+                
+                # Causal LM format: input is all but last, target is shifted by 1
+                input_tokens = full_sequence[:-1]
+                target_tokens = full_sequence[1:]
+                
+                n_prompt = len(turn_prompt)
+                n_completion = len(turn_completion)
+                seq_len = len(input_tokens)  # = len(full_sequence) - 1
+                
+                # Build logprobs array:
+                # - Positions 0 to n_prompt-2: predicting prompt tokens (no logprobs, use 0)
+                # - Position n_prompt-1: predicting first completion token (logprobs[0])
+                # - Positions n_prompt to seq_len-1: predicting rest of completion (logprobs[1:])
+                full_logprobs = [0.0] * (n_prompt - 1) + turn_logprobs
+                
+                # Build advantages array: 0 for prompt positions, normalized_advantage for completion
+                full_advantages = [0.0] * (n_prompt - 1) + [normalized_advantage] * n_completion
+                
+                # Build mask: 0 for prompt positions, 1 for completion positions
+                full_mask = [0.0] * (n_prompt - 1) + [1.0] * n_completion
+                
+                # Verify lengths match
+                assert len(input_tokens) == len(target_tokens) == len(full_logprobs) == len(full_advantages) == len(full_mask), \
+                    f"Length mismatch: input={len(input_tokens)}, target={len(target_tokens)}, logprobs={len(full_logprobs)}, advantages={len(full_advantages)}, mask={len(full_mask)}"
 
                 datum = tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(tokens=turn_prompt),
+                    model_input=tinker.ModelInput.from_ints(tokens=input_tokens),
                     loss_fn_inputs={
                         "target_tokens": tinker.TensorData.from_torch(
-                            torch.tensor(turn_completion)
+                            torch.tensor(target_tokens)
                         ),
                         "logprobs": tinker.TensorData.from_torch(
-                            torch.tensor(turn_logprobs)
+                            torch.tensor(full_logprobs)
                         ),
                         "advantages": tinker.TensorData.from_torch(
-                            torch.tensor(token_advantages)
+                            torch.tensor(full_advantages)
                         ),
                         "mask": tinker.TensorData.from_torch(
-                            torch.tensor(token_mask)
+                            torch.tensor(full_mask)
                         ),
                     },
                 )
@@ -271,6 +306,10 @@ class Terminus2RLTrainer:
 
     async def setup(self) -> None:
         """Initialize Tinker clients."""
+        # Suppress verbose Harbor logs at the module level
+        logging.getLogger("harbor").setLevel(logging.WARNING)
+        logging.getLogger("harbor.utils.logger").setLevel(logging.WARNING)
+        
         self._service_client = tinker.ServiceClient(base_url=self.config.tinker_base_url)
 
         if hasattr(self._service_client, "create_lora_training_client_async"):
@@ -332,7 +371,8 @@ class Terminus2RLTrainer:
                 kwargs={
                     "llm": self._create_llm(),
                     "collect_rollout_details": True,
-                    "enable_summarize": False,
+                    "enable_summarize": self.config.enable_summarize,
+                    "proactive_summarization_threshold": self.config.proactive_summarization_threshold,
                     "max_turns": self.config.max_turns,
                 },
             ),
@@ -363,17 +403,20 @@ class Terminus2RLTrainer:
                 )
                 return None
             except Exception as e:
-                logger.error(f"Trial failed for {task.task_id}: {e}", exc_info=True)
+                logger.error(f"Trial failed for {task.task_id}: {e}", exc_info=False)
                 return None
 
     async def _run_group(self, task: Task) -> TrialGroup:
         """Run multiple trials for same task (GRPO grouping)."""
+        logger.info(f"    Running {self.config.group_size} trials for task: {task.task_id}")
+        
         results = await asyncio.gather(
             *[self._run_trial(task) for _ in range(self.config.group_size)],
             return_exceptions=True,
         )
 
         valid: TrialGroup = []
+        rewards = []
         for r in results:
             if isinstance(r, Exception):
                 logger.error(f"Trial exception for {task.task_id}: {r}")
@@ -383,11 +426,25 @@ class Terminus2RLTrainer:
                 logger.warning(f"No rollout details for {task.task_id}")
             else:
                 valid.append(r)
+                reward = extract_reward(r.verifier_result)
+                rewards.append(reward)
+        
+        # Log summary of results
+        if rewards:
+            avg_reward = sum(rewards) / len(rewards)
+            max_reward = max(rewards)
+            logger.info(f"    Task {task.task_id}: {len(valid)}/{self.config.group_size} valid trials, "
+                       f"avg_reward={avg_reward:.3f}, max_reward={max_reward:.3f}")
+        else:
+            logger.warning(f"    Task {task.task_id}: No valid trials completed")
 
         return valid
 
     async def _run_batch(self, tasks: list[Task]) -> list[TrialGroup]:
         """Run trials for a batch of tasks."""
+        # Suppress Harbor logs before running trials (in case new loggers were created)
+        self._suppress_harbor_logs()
+        
         groups = await asyncio.gather(
             *[self._run_group(task) for task in tasks],
             return_exceptions=True,
@@ -504,6 +561,16 @@ class Terminus2RLTrainer:
             "loss_fn": self.config.loss_fn,
         }
 
+    def _suppress_harbor_logs(self) -> None:
+        """Suppress verbose Harbor DEBUG logs."""
+        # Set all harbor loggers to WARNING level to hide DEBUG logs
+        for name in list(logging.Logger.manager.loggerDict.keys()):
+            if name.startswith("harbor"):
+                harbor_logger = logging.getLogger(name)
+                harbor_logger.setLevel(logging.WARNING)
+                # Also disable propagation to prevent logs from bubbling up
+                harbor_logger.propagate = False
+    
     async def train(self) -> None:
         """Main training loop."""
         await self.setup()
@@ -514,6 +581,9 @@ class Terminus2RLTrainer:
             wandb_name=self.config.wandb_name,
             config=self.config,
         )
+
+        # Suppress verbose Harbor logs before running trials
+        self._suppress_harbor_logs()
 
         tasks = self._load_tasks()
         logger.info(f"Loaded {len(tasks)} tasks from {self.config.tasks_dir}")
