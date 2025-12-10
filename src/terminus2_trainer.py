@@ -10,6 +10,7 @@ from typing import Any
 
 import tinker
 import torch
+import resource
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.task.task import Task
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig, TaskConfig, TrialConfig
@@ -308,7 +309,6 @@ class Terminus2RLTrainer:
         """Initialize Tinker clients."""
         # Check file descriptor limits
         try:
-            import resource
             soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
             recommended_limit = self.config.n_parallel_envs * self.config.group_size * 20
             
