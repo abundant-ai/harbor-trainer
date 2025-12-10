@@ -78,6 +78,10 @@ class TrainerConfig:
     context_limit: int = 128000
     trial_timeout_sec: float | None = None
 
+    # Context summarization (enables parity with Terminus 2 evaluation)
+    enable_summarize: bool = True  # Enable context summarization when context is full
+    proactive_summarization_threshold: int = 8000  # Trigger summarization when free tokens below this
+
     # Environment configuration
     environment_type: str = "docker"
     environment_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -332,7 +336,8 @@ class Terminus2RLTrainer:
                 kwargs={
                     "llm": self._create_llm(),
                     "collect_rollout_details": True,
-                    "enable_summarize": False,
+                    "enable_summarize": self.config.enable_summarize,
+                    "proactive_summarization_threshold": self.config.proactive_summarization_threshold,
                     "max_turns": self.config.max_turns,
                 },
             ),

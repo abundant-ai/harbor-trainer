@@ -60,6 +60,15 @@ class CLIConfig:
     max_tokens: int = chz.field(default=4096, doc="Max tokens per generation")
     context_limit: int = chz.field(default=128000, doc="Model context limit")
 
+    enable_summarize: bool = chz.field(
+        default=True,
+        doc="Enable context summarization when context is full (matches Terminus 2 eval)",
+    )
+    proactive_summarization_threshold: int = chz.field(
+        default=8000,
+        doc="Trigger proactive summarization when free tokens fall below this threshold",
+    )
+
     # Environment configuration
     environment_type: Literal["docker", "daytona", "modal", "e2b", "runloop"] = chz.field(
         default="docker",
@@ -117,6 +126,7 @@ async def run_training(config: CLIConfig) -> None:
     logger.info(f"Environment: {config.environment_type} (n_parallel={config.n_parallel_envs})")
     logger.info(f"Batch size: {config.batch_size}, Group size: {config.group_size}")
     logger.info(f"Loss function: {config.loss_fn}, Substeps: {config.num_substeps}")
+    logger.info(f"Context summarization: {config.enable_summarize} (threshold: {config.proactive_summarization_threshold})")
     logger.info("=" * 60)
 
     trainer_config = TrainerConfig(
@@ -136,6 +146,8 @@ async def run_training(config: CLIConfig) -> None:
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         context_limit=config.context_limit,
+        enable_summarize=config.enable_summarize,
+        proactive_summarization_threshold=config.proactive_summarization_threshold,
         environment_type=config.environment_type,
         environment_kwargs=_parse_kwargs(config.environment_kwargs),
         n_parallel_envs=config.n_parallel_envs,
@@ -153,10 +165,22 @@ async def run_training(config: CLIConfig) -> None:
 
 def main() -> None:
     """Entry point for training."""
+    # Set root logger to WARNING to suppress verbose library logs
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    
+    # Enable INFO logs only for our own modules
+    # logging.getLogger("__main__").setLevel(logging.INFO)
+    # logging.getLogger("src.terminus2_trainer").setLevel(logging.INFO)
+    # logging.getLogger("src.tinker_llm").setLevel(logging.INFO)
+    
+    # # Keep tinker-cookbook at INFO for training metrics
+    # logging.getLogger("tinker_cookbook.utils.ml_log").setLevel(logging.INFO)
+    
+    # # Suppress verbose Harbor logs (Docker/environment operations)
+    # logging.getLogger("harbor").setLevel(logging.WARNING)
 
     config = chz.entrypoint(CLIConfig)
     asyncio.run(run_training(config))
