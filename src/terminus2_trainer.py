@@ -69,7 +69,7 @@ class TrainerConfig:
     normalize_advantages_by_std: bool = True  # Divide advantages by std
 
     # KL regularization against reference model
-    kl_penalty_coef: float = 0.001  # KL penalty coefficient (0 = disabled)
+    kl_penalty_coef: float = 0.0  # KL penalty coefficient (0 = disabled, default off due to multi-turn bugs)
 
     # Agent configuration
     max_turns: int | None = None
@@ -275,6 +275,34 @@ class Terminus2RLTrainer:
 
     async def setup(self) -> None:
         """Initialize Tinker clients."""
+        # Check file descriptor limits
+        try:
+            import resource
+            soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+            recommended_limit = self.config.n_parallel_envs * self.config.group_size * 20
+            
+            if soft_limit < recommended_limit:
+                logger.warning(
+                    f"System file descriptor limit ({soft_limit}) may be too low for "
+                    f"{self.config.n_parallel_envs} parallel environments × "
+                    f"{self.config.group_size} trials per task. "
+                    f"Recommended: {recommended_limit}. "
+                    f"Attempting to increase to {min(recommended_limit, hard_limit)}..."
+                )
+                try:
+                    resource.setrlimit(resource.RLIMIT_NOFILE, (min(recommended_limit, hard_limit), hard_limit))
+                    new_soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+                    logger.info(f"Increased file descriptor limit to {new_soft}")
+                except Exception as e:
+                    logger.error(f"Failed to increase file descriptor limit: {e}")
+                    logger.error("Consider running: ulimit -n 65536")
+        except Exception as e:
+            logger.warning(f"Could not check file descriptor limits: {e}")
+        
+        # Suppress verbose Harbor logs at the module level
+        logging.getLogger("harbor").setLevel(logging.WARNING)
+        logging.getLogger("harbor.utils.logger").setLevel(logging.WARNING)
+        
         self._service_client = tinker.ServiceClient(base_url=self.config.tinker_base_url)
 
         if hasattr(self._service_client, "create_lora_training_client_async"):
@@ -354,6 +382,7 @@ class Terminus2RLTrainer:
             raise RuntimeError("Trainer not initialized")
 
         async with self._semaphore:
+            trial = None
             try:
                 trial = Trial(self._create_trial_config(task))
                 if self.config.trial_timeout_sec is not None:
@@ -368,17 +397,45 @@ class Terminus2RLTrainer:
                 )
                 return None
             except Exception as e:
-                logger.error(f"Trial failed for {task.task_id}: {e}", exc_info=True)
+                logger.error(f"Trial failed for {task.task_id}: {e}", exc_info=False)
                 return None
+            finally:
+                # Critical cleanup to prevent file descriptor leaks
+                if trial is not None:
+                    # 1. Close logger file handlers (major source of FD leaks)
+                    if hasattr(trial, '_logger') and trial._logger is not None:
+                        for handler in trial._logger.handlers[:]:
+                            try:
+                                handler.close()
+                                trial._logger.removeHandler(handler)
+                            except Exception:
+                                pass
+                    
+                    # Note: Don't call environment.stop() here - Trial.run() already handles
+                    # cleanup in its own finally block via _cleanup_and_finalize().
+                    # Calling it twice can cause issues. We just clear references.
+                    
+                    # 2. Clear references to free resources
+                    if hasattr(trial, '_environment'):
+                        trial._environment = None
+                    if hasattr(trial, '_agent'):
+                        trial._agent = None
+                
+                # Force garbage collection to close any remaining leaked file descriptors
+                import gc
+                gc.collect()
 
     async def _run_group(self, task: Task) -> TrialGroup:
         """Run multiple trials for same task (GRPO grouping)."""
+        logger.info(f"    Running {self.config.group_size} trials for task: {task.task_id}")
+        
         results = await asyncio.gather(
             *[self._run_trial(task) for _ in range(self.config.group_size)],
             return_exceptions=True,
         )
 
         valid: TrialGroup = []
+        rewards = []
         for r in results:
             if isinstance(r, Exception):
                 logger.error(f"Trial exception for {task.task_id}: {r}")
@@ -388,11 +445,25 @@ class Terminus2RLTrainer:
                 logger.warning(f"No rollout details for {task.task_id}")
             else:
                 valid.append(r)
+                reward = extract_reward(r.verifier_result)
+                rewards.append(reward)
+        
+        # Log summary of results
+        if rewards:
+            avg_reward = sum(rewards) / len(rewards)
+            max_reward = max(rewards)
+            logger.info(f"    Task {task.task_id}: {len(valid)}/{self.config.group_size} valid trials, "
+                       f"avg_reward={avg_reward:.3f}, max_reward={max_reward:.3f}")
+        else:
+            logger.warning(f"    Task {task.task_id}: No valid trials completed")
 
         return valid
 
     async def _run_batch(self, tasks: list[Task]) -> list[TrialGroup]:
         """Run trials for a batch of tasks."""
+        # Suppress Harbor logs before running trials (in case new loggers were created)
+        self._suppress_harbor_logs()
+        
         groups = await asyncio.gather(
             *[self._run_group(task) for task in tasks],
             return_exceptions=True,
@@ -509,6 +580,16 @@ class Terminus2RLTrainer:
             "loss_fn": self.config.loss_fn,
         }
 
+    def _suppress_harbor_logs(self) -> None:
+        """Suppress verbose Harbor DEBUG logs."""
+        # Set all harbor loggers to WARNING level to hide DEBUG logs
+        for name in list(logging.Logger.manager.loggerDict.keys()):
+            if name.startswith("harbor"):
+                harbor_logger = logging.getLogger(name)
+                harbor_logger.setLevel(logging.WARNING)
+                # Also disable propagation to prevent logs from bubbling up
+                harbor_logger.propagate = False
+    
     async def train(self) -> None:
         """Main training loop."""
         await self.setup()
@@ -519,6 +600,9 @@ class Terminus2RLTrainer:
             wandb_name=self.config.wandb_name,
             config=self.config,
         )
+
+        # Suppress verbose Harbor logs before running trials
+        self._suppress_harbor_logs()
 
         tasks = self._load_tasks()
         logger.info(f"Loaded {len(tasks)} tasks from {self.config.tasks_dir}")

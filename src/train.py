@@ -53,6 +53,14 @@ class CLIConfig:
         default=False,
         doc="Remove groups where all rollouts have the same reward",
     )
+    normalize_advantages_by_std: bool = chz.field(
+        default=True,
+        doc="Normalize advantages by standard deviation (GRPO-style)",
+    )
+    kl_penalty_coef: float = chz.field(
+        default=0.0,
+        doc="KL penalty coefficient for regularization against base model (0 = disabled)",
+    )
 
     # Agent configuration
     max_turns: int | None = chz.field(default=None, doc="Max agent turns (None = unlimited)")
@@ -142,6 +150,8 @@ async def run_training(config: CLIConfig) -> None:
         loss_fn=config.loss_fn,
         num_substeps=config.num_substeps,
         remove_constant_reward_groups=config.remove_constant_reward_groups,
+        normalize_advantages_by_std=config.normalize_advantages_by_std,
+        kl_penalty_coef=config.kl_penalty_coef,
         max_turns=config.max_turns,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
@@ -172,15 +182,22 @@ def main() -> None:
     )
     
     # Enable INFO logs only for our own modules
-    # logging.getLogger("__main__").setLevel(logging.INFO)
-    # logging.getLogger("src.terminus2_trainer").setLevel(logging.INFO)
-    # logging.getLogger("src.tinker_llm").setLevel(logging.INFO)
+    logging.getLogger("__main__").setLevel(logging.INFO)
+    logging.getLogger("src.terminus2_trainer").setLevel(logging.INFO)
+    logging.getLogger("src.tinker_llm").setLevel(logging.INFO)
     
-    # # Keep tinker-cookbook at INFO for training metrics
-    # logging.getLogger("tinker_cookbook.utils.ml_log").setLevel(logging.INFO)
+    # Keep tinker-cookbook at INFO for training metrics
+    logging.getLogger("tinker_cookbook.utils.ml_log").setLevel(logging.INFO)
     
-    # # Suppress verbose Harbor logs (Docker/environment operations)
-    # logging.getLogger("harbor").setLevel(logging.WARNING)
+    # Suppress verbose Harbor logs (Docker/environment operations)
+    # Harbor uses its own logger system - suppress all Harbor loggers
+    logging.getLogger("harbor").setLevel(logging.WARNING)
+    logging.getLogger("harbor.utils.logger").setLevel(logging.WARNING)
+    
+    # Also suppress all child loggers that might be created by Harbor
+    for name in list(logging.Logger.manager.loggerDict.keys()):
+        if name.startswith("harbor"):
+            logging.getLogger(name).setLevel(logging.WARNING)
 
     config = chz.entrypoint(CLIConfig)
     asyncio.run(run_training(config))
