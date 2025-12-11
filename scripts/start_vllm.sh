@@ -7,9 +7,6 @@
 #   ./scripts/start_vllm.sh Qwen/Qwen3-8B 2         # Qwen3-8B on 2 GPUs
 #   ./scripts/start_vllm.sh Qwen/Qwen3-30B-A3B 4    # MoE on 4 GPUs
 #
-# This provides much better memory efficiency for inference than JAX,
-# especially for long contexts (32K+) due to PagedAttention.
-#
 
 set -e
 
@@ -61,21 +58,6 @@ GPU_MEMORY_UTIL="${GPU_MEMORY_UTIL:-0.45}"
 echo "Starting server... (Ctrl+C to stop)"
 echo ""
 
-# Enforce eager mode to avoid torch.compile issues (requires python3-dev otherwise)
-# Set VLLM_USE_TORCH_COMPILE=1 to enable compilation (faster but needs: sudo apt install python3.12-dev)
-ENFORCE_EAGER="${ENFORCE_EAGER:-1}"
-
-if [ "$ENFORCE_EAGER" = "1" ]; then
-    echo "Using eager mode (no torch.compile)"
-    EAGER_FLAG="--enforce-eager"
-else
-    echo "Using torch.compile (requires python3.12-dev)"
-    EAGER_FLAG=""
-fi
-echo ""
-
-# Use uv to run vLLM with proper dependencies
-# The skyrl-train package has vLLM as an optional dependency
 cd "$(dirname "$0")/../SkyRL/skyrl-train"
 
 uv run --isolated --extra vllm python -m vllm.entrypoints.openai.api_server \
@@ -92,5 +74,4 @@ uv run --isolated --extra vllm python -m vllm.entrypoints.openai.api_server \
     --enable-prefix-caching \
     --enable-chunked-prefill \
     --trust-remote-code \
-    --disable-log-requests \
-    $EAGER_FLAG
+    --disable-log-requests

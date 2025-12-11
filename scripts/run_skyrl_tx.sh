@@ -17,16 +17,8 @@ export PATH="$HOME/.local/bin:$PATH"
 # Increase file descriptor limit to prevent "Too many open files" errors
 ulimit -n 65536
 
-# Load .env and ensure TINKER_API_KEY is set
-if [ -f .env ]; then
-    set -a
-    source .env
-    set +a
-fi
-
-if [ -z "$TINKER_API_KEY" ] || [ "$TINKER_API_KEY" = "your-api-key-here" ]; then
-    export TINKER_API_KEY="dummy-key-for-skyrl-tx"
-fi
+# The tinker SDK requires TINKER_API_KEY to be set, but skyrl-tx ignores it
+export TINKER_API_KEY="local"
 
 # Configuration
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-4B}"
@@ -115,10 +107,10 @@ python -m src.train \
   backend=skyrl-tx \
   skyrl_tx_url=${SKYRL_TX_URL} \
   model_name=${MODEL_NAME} \
-  tasks_dir=./datasets/terminal-bench-2 \
+  tasks_dir=./datasets/extracted_tasks \
   learning_rate=2e-4 \
   batch_size=1 \
-  group_size=8 \
+  group_size=4 \
   eval_split=0.2 \
   eval_group_size=4 \
   n_parallel_envs=8 \
@@ -132,4 +124,6 @@ python -m src.train \
   remove_constant_reward_groups=true \
   normalize_advantages_by_std=true \
   loss_fn=ppo \
-  environment_type=docker
+  environment_type=docker \
+  wandb_project=harbor-training \
+  wandb_name=qwen-3-4b-skyrl-tx
