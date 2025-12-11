@@ -56,6 +56,13 @@ fi
 echo "✓ skyrl-tx server is running"
 echo ""
 
+# Note: n_parallel_envs controls how many rollouts run concurrently
+# The server's --sample-max-num-sequences controls how many are batched for inference
+# If you hit OOM, either:
+#   1. Reduce SAMPLE_MAX_SEQ when starting the server (default: 2)
+#   2. Reduce n_parallel_envs below
+#   3. Reduce context_limit
+
 python -m src.train \
   backend=skyrl-tx \
   skyrl_tx_url=${SKYRL_TX_URL} \
