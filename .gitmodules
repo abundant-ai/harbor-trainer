@@ -1,3 +1,6 @@
 [submodule "SkyRL"]
 	path = SkyRL
 	url = https://github.com/RishiDesai/SkyRL.git
+[submodule "harbor"]
+	path = harbor
+	url = https://github.com/RishiDesai/harbor.git
