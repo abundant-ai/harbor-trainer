@@ -47,6 +47,14 @@ fi
 echo "Starting server... (Ctrl+C to stop)"
 echo ""
 
+# Limit JAX GPU memory pre-allocation (default is 90% which causes OOM issues)
+# For Qwen3-4B: 0.25 (~20GB) is plenty
+# For Qwen3-8B: 0.35 (~28GB) should work
+# For larger models, increase as needed
+export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.25}"
+echo "JAX memory fraction: ${XLA_PYTHON_CLIENT_MEM_FRACTION}"
+echo ""
+
 uv run --extra tinker --extra gpu python -m tx.tinker.api \
     --base-model "${MODEL_NAME}" \
     --tensor-parallel-size "${TP_SIZE}" \
