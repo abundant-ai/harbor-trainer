@@ -1,67 +1,115 @@
 #!/bin/bash
 #
-# Run training with skyrl-tx backend (self-hosted)
+# Run training with skyrl-tx backend (uses vLLM for inference)
 #
 # PREREQUISITES:
-# 1. Start skyrl-tx server in a separate terminal:
-#    cd SkyRL/skyrl-tx
-#    uv run --extra tinker --extra gpu python -m tx.tinker.api \
-#      --base-model Qwen/Qwen3-4B \
-#      --tensor-parallel-size 1 \
-#      --max-lora-rank 32
+#   Terminal 1: ./scripts/start_vllm.sh
+#   Terminal 2: ./scripts/run_skyrl_tx.sh
 #
-# 2. Verify server is running:
-#    curl http://localhost:8000/api/v1/healthz
-#    # Should return: {"status":"ok"}
+# This script automatically starts skyrl-tx in the background.
 #
+
+set -e
+
+# Ensure ~/.local/bin is in PATH (where uv is typically installed)
+export PATH="$HOME/.local/bin:$PATH"
 
 # Increase file descriptor limit to prevent "Too many open files" errors
 ulimit -n 65536
 
-# Load .env and ensure TINKER_API_KEY is set (required by tinker SDK even for local server)
+# Load .env and ensure TINKER_API_KEY is set
 if [ -f .env ]; then
-    set -a  # automatically export all variables
+    set -a
     source .env
     set +a
 fi
 
-# For skyrl-tx, we need TINKER_API_KEY set but it can be a dummy value
 if [ -z "$TINKER_API_KEY" ] || [ "$TINKER_API_KEY" = "your-api-key-here" ]; then
     export TINKER_API_KEY="dummy-key-for-skyrl-tx"
 fi
 
 # Configuration
-SKYRL_TX_URL="${SKYRL_TX_URL:-http://localhost:8000}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-4B}"
+TP_SIZE="${TP_SIZE:-1}"
+VLLM_URL="${VLLM_URL:-http://localhost:8001}"
+SKYRL_TX_URL="${SKYRL_TX_URL:-http://localhost:8000}"
+LORA_DIR="${LORA_DIR:-/tmp/lora_models}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKYRL_TX_DIR="${SCRIPT_DIR}/../SkyRL/skyrl-tx"
 
 echo "=============================================="
-echo "Training with skyrl-tx backend"
-echo "Server URL: ${SKYRL_TX_URL}"
+echo "Training with skyrl-tx + vLLM"
+echo "=============================================="
 echo "Model: ${MODEL_NAME}"
+echo "vLLM URL: ${VLLM_URL}"
 echo "=============================================="
-
-# Verify skyrl-tx server is running
-if ! curl -s "${SKYRL_TX_URL}/api/v1/healthz" > /dev/null 2>&1; then
-    echo "ERROR: skyrl-tx server not responding at ${SKYRL_TX_URL}"
-    echo ""
-    echo "Start the server first:"
-    echo "  cd SkyRL/skyrl-tx"
-    echo "  uv run --extra tinker --extra gpu python -m tx.tinker.api \\"
-    echo "    --base-model ${MODEL_NAME} \\"
-    echo "    --tensor-parallel-size 1 \\"
-    echo "    --max-lora-rank 32"
-    exit 1
-fi
-
-echo "✓ skyrl-tx server is running"
 echo ""
 
-# Note: n_parallel_envs controls how many rollouts run concurrently
-# The server's --sample-max-num-sequences controls how many are batched for inference
-# If you hit OOM, either:
-#   1. Reduce SAMPLE_MAX_SEQ when starting the server (default: 2)
-#   2. Reduce n_parallel_envs below
-#   3. Reduce context_limit
+# Check vLLM is running
+if ! curl -s "${VLLM_URL}/health" > /dev/null 2>&1; then
+    echo "ERROR: vLLM server not responding at ${VLLM_URL}"
+    echo ""
+    echo "Start vLLM first in another terminal:"
+    echo "  ./scripts/start_vllm.sh"
+    exit 1
+fi
+echo "✓ vLLM server is running"
+
+# Start skyrl-tx in background if not already running
+if curl -s "${SKYRL_TX_URL}/api/v1/healthz" > /dev/null 2>&1; then
+    echo "✓ skyrl-tx server already running"
+else
+    echo "Starting skyrl-tx server in background..."
+    
+    # JAX memory allocation
+    export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.45}"
+    
+    cd "$SKYRL_TX_DIR"
+    uv run --extra tinker --extra gpu python -m tx.tinker.api \
+        --base-model "${MODEL_NAME}" \
+        --tensor-parallel-size "${TP_SIZE}" \
+        --max-lora-rank 32 \
+        --port 8000 \
+        --gradient-checkpointing \
+        --train-micro-batch-size 2 \
+        --external-inference-url "${VLLM_URL}" \
+        --external-inference-lora-base "${LORA_DIR}" \
+        > /tmp/skyrl_tx.log 2>&1 &
+    
+    SKYRL_TX_PID=$!
+    cd - > /dev/null
+    
+    # Wait for it to start
+    echo "Waiting for skyrl-tx to start (PID: $SKYRL_TX_PID)..."
+    for i in {1..30}; do
+        if curl -s "${SKYRL_TX_URL}/api/v1/healthz" > /dev/null 2>&1; then
+            echo "✓ skyrl-tx server is running"
+            break
+        fi
+        if ! kill -0 $SKYRL_TX_PID 2>/dev/null; then
+            echo "ERROR: skyrl-tx failed to start. Check /tmp/skyrl_tx.log"
+            cat /tmp/skyrl_tx.log
+            exit 1
+        fi
+        sleep 1
+    done
+    
+    if ! curl -s "${SKYRL_TX_URL}/api/v1/healthz" > /dev/null 2>&1; then
+        echo "ERROR: skyrl-tx failed to start within 30 seconds"
+        echo "Log output:"
+        cat /tmp/skyrl_tx.log
+        exit 1
+    fi
+    
+    # Cleanup on exit
+    trap "echo 'Stopping skyrl-tx...'; kill $SKYRL_TX_PID 2>/dev/null" EXIT
+fi
+
+echo ""
+
+# Run training
+cd "$SCRIPT_DIR/.."
 
 python -m src.train \
   backend=skyrl-tx \
@@ -84,5 +132,4 @@ python -m src.train \
   remove_constant_reward_groups=true \
   normalize_advantages_by_std=true \
   loss_fn=ppo \
-  environment_type=docker \
-
+  environment_type=docker
