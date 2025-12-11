@@ -47,11 +47,12 @@ fi
 echo "Starting server... (Ctrl+C to stop)"
 echo ""
 
-# Limit JAX GPU memory pre-allocation (default is 90% which causes OOM issues)
-# For Qwen3-4B: 0.25 (~20GB) is plenty
-# For Qwen3-8B: 0.35 (~28GB) should work
-# For larger models, increase as needed
-export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.25}"
+# JAX GPU memory pre-allocation fraction
+# JAX pre-allocates a fixed memory pool - model weights + LoRA + optimizer state must all fit within it
+# Default 0.7 (~57GB on 80GB GPU) works for Qwen3-4B with LoRA rank 32
+# Increase to 0.8+ for larger models or higher LoRA ranks
+# Note: This is memory WITHIN the JAX pool, not total GPU memory
+export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.7}"
 echo "JAX memory fraction: ${XLA_PYTHON_CLIENT_MEM_FRACTION}"
 echo ""
 

@@ -78,16 +78,55 @@ else
     echo "✓ .env file already exists"
 fi
 
-# 5. Check for Docker
+# 5. Check for Docker and Docker Compose V2
 echo -e "\n${GREEN}[5/6] Checking Docker...${NC}"
 if ! command -v docker &> /dev/null; then
     echo -e "${YELLOW}⚠️  Docker is not installed. Please install Docker to continue.${NC}"
 else
     echo "✓ Docker is installed"
+    
+    # Check Docker daemon access
     if docker info &> /dev/null; then
-        echo "✓ Docker daemon is running"
+        echo "✓ Docker daemon is running and accessible"
     else
-        echo -e "${YELLOW}⚠️  Docker daemon is not running. Please start Docker.${NC}"
+        echo -e "${YELLOW}⚠️  Cannot access Docker daemon.${NC}"
+        # Check if it's a permission issue
+        if [ -S /var/run/docker.sock ]; then
+            echo "   Docker socket exists but you may not have permission."
+            echo "   Adding user to docker group..."
+            if sudo usermod -aG docker "$USER" 2>/dev/null; then
+                echo "   ✓ Added $USER to docker group"
+                echo -e "${YELLOW}   ⚠️  You may need to log out and back in, or run: newgrp docker${NC}"
+            fi
+            # Also try fixing socket permissions as a fallback
+            if ! docker info &> /dev/null 2>&1; then
+                echo "   Fixing Docker socket permissions..."
+                sudo chmod 666 /var/run/docker.sock 2>/dev/null && echo "   ✓ Fixed socket permissions"
+            fi
+        else
+            echo -e "${YELLOW}   Docker daemon may not be running. Please start Docker.${NC}"
+        fi
+    fi
+    
+    # Check for Docker Compose V2 (required by Harbor)
+    if docker compose version &> /dev/null; then
+        COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || docker compose version | grep -oP '\d+\.\d+\.\d+' | head -1)
+        echo "✓ Docker Compose V2 is installed (version: ${COMPOSE_VERSION})"
+    else
+        echo -e "${YELLOW}⚠️  Docker Compose V2 not found. Installing...${NC}"
+        # Try Ubuntu/Debian package first
+        if command -v apt-get &> /dev/null; then
+            if sudo apt-get update -qq && sudo apt-get install -y docker-compose-v2 2>/dev/null; then
+                echo "✓ Docker Compose V2 installed via apt"
+            else
+                echo -e "${YELLOW}   Could not install docker-compose-v2 via apt.${NC}"
+                echo "   Please install Docker Compose V2 manually:"
+                echo "   https://docs.docker.com/compose/install/"
+            fi
+        else
+            echo -e "${YELLOW}   Please install Docker Compose V2 manually:${NC}"
+            echo "   https://docs.docker.com/compose/install/"
+        fi
     fi
 fi
 
