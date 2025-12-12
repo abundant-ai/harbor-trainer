@@ -4,3 +4,6 @@
 [submodule "harbor"]
 	path = harbor
 	url = https://github.com/RishiDesai/harbor.git
+[submodule "datasets/terminal-bench-2"]
+	path = datasets/terminal-bench-2
+	url = https://github.com/laude-institute/terminal-bench-2

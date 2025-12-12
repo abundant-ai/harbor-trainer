@@ -3,7 +3,7 @@ name = "terminal-bench-trainer"
 version = "0.1.0"
 description = "Post-training Qwen on terminal bench using the Tinker API"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     # Tinker API and cookbook
     "tinker>=0.6.1",
@@ -68,7 +68,7 @@ python_files = ["test_*.py", "*_test.py"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
