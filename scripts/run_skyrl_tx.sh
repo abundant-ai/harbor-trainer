@@ -26,6 +26,7 @@ TP_SIZE="${TP_SIZE:-1}"
 VLLM_URL="${VLLM_URL:-http://localhost:8001}"
 SKYRL_TX_URL="${SKYRL_TX_URL:-http://localhost:8000}"
 LORA_DIR="${LORA_DIR:-/tmp/lora_models}"
+TRAIN_GPUS="${TRAIN_GPUS:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKYRL_TX_DIR="${SCRIPT_DIR}/../SkyRL/skyrl-tx"
@@ -35,6 +36,7 @@ echo "Training with skyrl-tx + vLLM"
 echo "=============================================="
 echo "Model: ${MODEL_NAME}"
 echo "vLLM URL: ${VLLM_URL}"
+echo "Training CUDA_VISIBLE_DEVICES: ${TRAIN_GPUS}"
 echo "=============================================="
 echo ""
 
@@ -47,6 +49,9 @@ if ! curl -s "${VLLM_URL}/health" > /dev/null 2>&1; then
     exit 1
 fi
 echo "✓ vLLM server is running"
+
+# Pin training to specific GPU(s) to avoid contention with vLLM
+export CUDA_VISIBLE_DEVICES="${TRAIN_GPUS}"
 
 # Start skyrl-tx in background if not already running
 if curl -s "${SKYRL_TX_URL}/api/v1/healthz" > /dev/null 2>&1; then

@@ -4,6 +4,8 @@ set -e  # Exit on error
 
 echo "🚀 Setting up Terminal Bench Trainer..."
 
+git submodule update --init --recursive 
+
 # Color codes for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -12,7 +14,7 @@ MIN_PYTHON="3.11"
 TARGET_PYTHON="3.12"
 
 # 1. Install uv if not already installed
-echo -e "\n${GREEN}[1/6] Checking for uv...${NC}"
+echo -e "\n${GREEN}[1/7] Checking for uv...${NC}"
 if ! command -v uv &> /dev/null; then
     echo "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -36,7 +38,7 @@ else
 fi
 
 # 2. Check and install Python 3.12+
-echo -e "\n${GREEN}[2/6] Checking Python version (>=${MIN_PYTHON}, prefer ${TARGET_PYTHON})...${NC}"
+echo -e "\n${GREEN}[2/7] Checking Python version (>=${MIN_PYTHON}, prefer ${TARGET_PYTHON})...${NC}"
 if ! python3 -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
     PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}' || echo "unknown")
     echo "Current Python version: $PYTHON_VERSION"
@@ -56,14 +58,49 @@ fi
 PYTHON_BIN=$(uv python find "${TARGET_PYTHON}" 2>/dev/null || command -v python3)
 echo "Using Python interpreter: ${PYTHON_BIN}"
 
-# 3. Create virtual environment and install dependencies
-echo -e "\n${GREEN}[3/6] Setting up virtual environment and installing dependencies...${NC}"
+# 3. Ensure Python development headers are available (needed for torch/tvm extensions)
+echo -e "\n${GREEN}[3/7] Ensuring Python development headers (Python.h)...${NC}"
+if "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+import sysconfig
+from pathlib import Path
+hdr = Path(sysconfig.get_paths().get("include", "")) / "Python.h"
+raise SystemExit(0 if hdr.exists() else 1)
+PY
+then
+    echo "✓ Python.h found"
+else
+    PY_MM=$("$PYTHON_BIN" - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+)
+    DEV_PKG="python${PY_MM}-dev"
+    if command -v apt-get &> /dev/null; then
+        echo "Installing Python headers via apt (${DEV_PKG})..."
+        sudo apt-get update -qq
+        if sudo apt-get install -y "${DEV_PKG}"; then
+            echo "✓ Installed ${DEV_PKG}"
+        else
+            echo -e "${YELLOW}⚠️  Failed to install ${DEV_PKG}, trying python3-dev...${NC}"
+            if sudo apt-get install -y python3-dev; then
+                echo "✓ Installed python3-dev fallback"
+            else
+                echo -e "${YELLOW}⚠️  Could not install Python headers automatically. Please install ${DEV_PKG} (or python3-dev) manually.${NC}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}⚠️  Cannot install Python headers automatically on this system. Please install ${DEV_PKG} (or python3-dev) so Python.h is available.${NC}"
+    fi
+fi
+
+# 4. Create virtual environment and install dependencies
+echo -e "\n${GREEN}[4/7] Setting up virtual environment and installing dependencies...${NC}"
 uv venv --python "$PYTHON_BIN"
 source .venv/bin/activate
 uv pip install -e .
 
-# 4. Create .env file if it doesn't exist
-echo -e "\n${GREEN}[4/6] Setting up .env file...${NC}"
+# 5. Create .env file if it doesn't exist
+echo -e "\n${GREEN}[5/7] Setting up .env file...${NC}"
 if [ ! -f .env ]; then
     echo "Creating .env file..."
     cat > .env << 'EOF'
@@ -78,8 +115,8 @@ else
     echo "✓ .env file already exists"
 fi
 
-# 5. Check for Docker and Docker Compose V2
-echo -e "\n${GREEN}[5/6] Checking Docker...${NC}"
+# 6. Check for Docker and Docker Compose V2
+echo -e "\n${GREEN}[6/7] Checking Docker...${NC}"
 if ! command -v docker &> /dev/null; then
     echo -e "${YELLOW}⚠️  Docker is not installed. Installing Docker...${NC}"
     
@@ -163,8 +200,8 @@ if command -v docker &> /dev/null; then
     fi
 fi
 
-# 6. Docker login prompt
-echo -e "\n${GREEN}[6/6] Docker login...${NC}"
+# 7. Docker login prompt
+echo -e "\n${GREEN}[7/7] Docker login...${NC}"
 echo "You may need to login to Docker Hub to pull prebuilt images."
 read -p "Do you want to run 'docker login' now? (y/n) " -n 1 -r
 echo
