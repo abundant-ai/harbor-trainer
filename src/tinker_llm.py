@@ -10,6 +10,7 @@ from harbor.llms.base import (
     OutputLengthExceededError,
 )
 from harbor.models.metric import UsageInfo
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 from tinker_cookbook.renderers import Renderer
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
@@ -18,25 +19,36 @@ class LogprobsMissingError(RuntimeError):
     """Raised when Tinker does not return logprobs for sampled tokens."""
 
 
-class TinkerLLM(BaseLLM):
+class TinkerLLM(BaseLLM, BaseModel):
     """
     LLM backend using Tinker SamplingClient for RL training.
 
-    This allows Terminus2 (with llm=TinkerLLM) to use the same Chat wrapper and
-    conversation management as evaluation, while collecting token-level
-    data needed for RL training.
+    This allows Terminus2 (with llm=TinkerLLM) to use the same agent harness and
+    conversation management as the evaluation.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Serializable fields (type declarations for Pydantic)
+    model_name: str
+    max_tokens: int
+    temperature: float
+    context_limit: int
+
+    # Private attributes excluded from serialization
+    _client: tinker.SamplingClient = PrivateAttr()
+    _tokenizer: Tokenizer = PrivateAttr()
+    _renderer: Renderer = PrivateAttr()
 
     def __init__(
             self,
             sampling_client: tinker.SamplingClient,
             tokenizer: Tokenizer,
             renderer: Renderer,
-            model_name: str = "",
-            max_tokens: int = 4096,
-            temperature: float = 0.7,
-            context_limit: int = 128000,
-            **kwargs,
+            model_name: str,
+            max_tokens: int,
+            temperature: float,
+            context_limit: int,
     ):
         """
         Initialize TinkerLLM.
@@ -49,16 +61,17 @@ class TinkerLLM(BaseLLM):
             max_tokens: Maximum tokens to generate per response
             temperature: Sampling temperature
             context_limit: Maximum context length for the model
-            **kwargs: Additional arguments passed to BaseLLM
         """
-        super().__init__(**kwargs)
+        # Pydantic's __init__ sets self.model_name, self.temperature, etc.
+        super().__init__(
+            model_name=model_name,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            context_limit=context_limit,
+        )
         self._client = sampling_client
         self._tokenizer = tokenizer
         self._renderer = renderer
-        self._model_name = model_name
-        self._max_tokens = max_tokens
-        self._temperature = temperature
-        self._context_limit = context_limit
 
     @property
     def tokenizer(self) -> Tokenizer:
@@ -72,7 +85,7 @@ class TinkerLLM(BaseLLM):
 
     def get_model_context_limit(self) -> int:
         """Get the context limit (max input tokens) for the current model."""
-        return self._context_limit
+        return self.context_limit
 
     async def call(
             self,
@@ -108,10 +121,10 @@ class TinkerLLM(BaseLLM):
 
         # Check context length
         input_length = model_input.length
-        if input_length > self._context_limit - self._max_tokens:
+        if input_length > self.context_limit - self.max_tokens:
             raise ContextLengthExceededError(
                 f"Context length {input_length} exceeds limit "
-                f"{self._context_limit - self._max_tokens}"
+                f"{self.context_limit - self.max_tokens}"
             )
 
         # Sample from Tinker
@@ -119,8 +132,8 @@ class TinkerLLM(BaseLLM):
             prompt=model_input,
             num_samples=1,
             sampling_params=tinker.SamplingParams(
-                max_tokens=self._max_tokens,
-                temperature=self._temperature,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
                 stop=stop_sequences,
             ),
         )
@@ -144,7 +157,7 @@ class TinkerLLM(BaseLLM):
         # Check for truncation
         if sampled_seq.stop_reason == "length":
             raise OutputLengthExceededError(
-                f"Output truncated at {self._max_tokens} tokens",
+                f"Output truncated at {self.max_tokens} tokens",
                 truncated_response=content,
             )
 
