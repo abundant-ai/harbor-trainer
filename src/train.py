@@ -30,6 +30,16 @@ class CLIConfig:
         munger=lambda _, s: os.path.expanduser(s),
     )
 
+    # Backend selection
+    backend: Literal["tinker", "skyrl-tx"] = chz.field(
+        default="tinker",
+        doc="Training backend: 'tinker' (cloud API) or 'skyrl-tx' (self-hosted)",
+    )
+    skyrl_tx_url: str | None = chz.field(
+        default=None,
+        doc="skyrl-tx server URL when backend='skyrl-tx' (e.g., http://localhost:8000)",
+    )
+
     # Tinker configuration
     tinker_base_url: str | None = chz.field(default=None, doc="Tinker API base URL")
     lora_rank: int = chz.field(default=32, doc="LoRA rank")
@@ -152,12 +162,15 @@ async def run_training(config: CLIConfig) -> None:
     logger.info(f"Batch size: {config.batch_size}, Group size: {config.group_size}")
     logger.info(f"Loss function: {config.loss_fn}, Substeps: {config.num_substeps}")
     logger.info(f"Context summarization: {config.enable_summarize} (threshold: {config.proactive_summarization_threshold})")
+    logger.info(f"Backend: {config.backend}" + (f" ({config.skyrl_tx_url})" if config.backend == "skyrl-tx" else ""))
     logger.info("=" * 60)
 
     trainer_config = TrainerConfig(
         model_name=config.model_name,
         tasks_dir=Path(config.tasks_dir),
         logs_dir=Path(config.logs_dir),
+        backend=config.backend,
+        skyrl_tx_url=config.skyrl_tx_url,
         tinker_base_url=config.tinker_base_url,
         lora_rank=config.lora_rank,
         learning_rate=config.learning_rate,

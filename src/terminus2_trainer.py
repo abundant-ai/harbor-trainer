@@ -50,6 +50,10 @@ class TrainerConfig:
     tasks_dir: Path
     logs_dir: Path
 
+    # Backend selection
+    backend: str = "tinker"  # "tinker" (cloud API) or "skyrl-tx" (self-hosted)
+    skyrl_tx_url: str | None = None  # URL for skyrl-tx server (e.g., "http://localhost:8000")
+
     # Tinker configuration
     tinker_base_url: str | None = None
     lora_rank: int = 32
@@ -319,7 +323,23 @@ class Terminus2RLTrainer:
         logging.getLogger("harbor").setLevel(logging.WARNING)
         logging.getLogger("harbor.utils.logger").setLevel(logging.WARNING)
         
-        self._service_client = tinker.ServiceClient(base_url=self.config.tinker_base_url)
+        # Select backend URL based on configuration
+        if self.config.backend == "skyrl-tx":
+            if not self.config.skyrl_tx_url:
+                raise ValueError("skyrl_tx_url is required when backend='skyrl-tx'")
+            base_url = self.config.skyrl_tx_url
+            logger.info(f"Using skyrl-tx backend at {base_url}")
+            # Validate model compatibility for skyrl-tx (currently only Qwen3)
+            if not any(self.config.model_name.lower().startswith(p) for p in ["qwen/qwen3", "qwen3"]):
+                logger.warning(
+                    f"Model {self.config.model_name} may not be supported by skyrl-tx. "
+                    f"Currently supported: Qwen3 family. Consider using backend='tinker'."
+                )
+        else:
+            base_url = self.config.tinker_base_url
+            logger.info(f"Using Tinker backend" + (f" at {base_url}" if base_url else " (default cloud)"))
+        
+        self._service_client = tinker.ServiceClient(base_url=base_url)
 
         if hasattr(self._service_client, "create_lora_training_client_async"):
             self._training_client = await self._service_client.create_lora_training_client_async(
@@ -337,16 +357,34 @@ class Terminus2RLTrainer:
         renderer_name = get_recommended_renderer_name(self.config.model_name)
         self._renderer = get_renderer(renderer_name, self._tokenizer)
 
-        self._sampling_client = await self._training_client.save_weights_and_get_sampling_client_async(
-            name="initial"
-        )
-        
-        # Store frozen reference model for KL penalty
-        if self.config.kl_penalty_coef > 0:
-            self._base_sampling_client = await self._training_client.save_weights_and_get_sampling_client_async(
-                name="reference_base"
+        # Create sampling client - handle skyrl-tx API incompatibility
+        if self.config.backend == "skyrl-tx":
+            # skyrl-tx requires explicit path for save_weights_for_sampler (no ephemeral saves)
+            # Use save_weights_for_sampler + create_sampling_client instead
+            logger.info("Creating sampling client for skyrl-tx using save_weights_for_sampler")
+            save_future = await self._training_client.save_weights_for_sampler_async(name="initial")
+            save_result = await save_future  # APIFuture needs second await to get result
+            self._sampling_client = await self._training_client.create_sampling_client_async(
+                model_path=save_result.path
             )
-            logger.info(f"KL regularization enabled with coef={self.config.kl_penalty_coef}")
+            
+            self._base_sampling_client = None
+            if self.config.kl_penalty_coef > 0:
+                logger.warning("KL penalty not fully tested with skyrl-tx, disabling for safety")
+                self.config.kl_penalty_coef = 0.0
+        else:
+            # For Tinker cloud, use the standard API with ephemeral saves
+            self._sampling_client = await self._training_client.save_weights_and_get_sampling_client_async(
+                name="initial"
+            )
+            # Store frozen reference model for KL penalty
+            if self.config.kl_penalty_coef > 0:
+                self._base_sampling_client = await self._training_client.save_weights_and_get_sampling_client_async(
+                    name="reference_base"
+                )
+                logger.info(f"KL regularization enabled with coef={self.config.kl_penalty_coef}")
+            else:
+                self._base_sampling_client = None
 
         self._semaphore = asyncio.Semaphore(self.config.n_parallel_envs)
         self._batch_count = 0
@@ -588,11 +626,21 @@ class Terminus2RLTrainer:
             f"checkpoint_{self._batch_count + 1:06d}" if checkpoint_due else "latest"
         )
 
-        self._sampling_client = (
-            await self._training_client.save_weights_and_get_sampling_client_async(
-                name=checkpoint_name
+        # Update sampling client with new weights
+        if self.config.backend == "skyrl-tx":
+            # Use save_weights_for_sampler + create_sampling_client for skyrl-tx
+            save_future = await self._training_client.save_weights_for_sampler_async(name=checkpoint_name)
+            save_result = await save_future  # APIFuture needs second await
+            self._sampling_client = await self._training_client.create_sampling_client_async(
+                model_path=save_result.path
             )
-        )
+        else:
+            # Use the standard ephemeral save for Tinker cloud
+            self._sampling_client = (
+                await self._training_client.save_weights_and_get_sampling_client_async(
+                    name=checkpoint_name
+                )
+            )
         self._batch_count += 1
 
         return {
