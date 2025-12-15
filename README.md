@@ -48,12 +48,12 @@ terminal-bench-2/
 
 ```bash
 python -m src.train \
-  model_name=moonshotai/Kimi-K2-Thinking  \
+  model_name=Qwen/Qwen3-235B-A22B-Instruct-2507  \
   tasks_dir=./datasets/terminal-bench-2 \
   learning_rate=2e-4 \
   batch_size=1 \
-  group_size=16 \
-  n_parallel_envs=16 \
+  group_size=8 \
+  n_parallel_envs=8 \
   max_tokens=1024 \
   temperature=0.7 \
   context_limit=32000 \

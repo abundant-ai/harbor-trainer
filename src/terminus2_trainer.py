@@ -445,17 +445,17 @@ class Terminus2RLTrainer:
                 return await trial.run()
             except asyncio.TimeoutError:
                 logger.error(
-                    f"Trial timed out for {task.task_id} after "
+                    f"Trial timed out for {task.name} after "
                     f"{self.config.trial_timeout_sec} seconds"
                 )
                 return None
             except Exception as e:
-                logger.error(f"Trial failed for {task.task_id}: {e}", exc_info=False)
+                logger.error(f"Trial failed for {task.name}: {e}", exc_info=False)
                 return None
 
     async def _run_group(self, task: Task) -> TrialGroup:
         """Run multiple trials for same task (GRPO grouping)."""
-        logger.info(f"    Running {self.config.group_size} trials for task: {task.task_id}")
+        logger.info(f"    Running {self.config.group_size} trials for task: {task.name}")
         
         results = await asyncio.gather(
             *[self._run_trial(task) for _ in range(self.config.group_size)],
@@ -466,11 +466,11 @@ class Terminus2RLTrainer:
         rewards = []
         for r in results:
             if isinstance(r, Exception):
-                logger.error(f"Trial exception for {task.task_id}: {r}")
+                logger.error(f"Trial exception for {task.name}: {r}")
             elif r is None:
-                logger.warning(f"Trial returned None for {task.task_id}")
+                logger.warning(f"Trial returned None for {task.name}")
             elif not r.agent_result or not r.agent_result.rollout_details:
-                logger.warning(f"No rollout details for {task.task_id}")
+                logger.warning(f"No rollout details for {task.name}")
             else:
                 valid.append(r)
                 reward = extract_reward(r.verifier_result)
@@ -480,10 +480,10 @@ class Terminus2RLTrainer:
         if rewards:
             avg_reward = sum(rewards) / len(rewards)
             max_reward = max(rewards)
-            logger.info(f"    Task {task.task_id}: {len(valid)}/{self.config.group_size} valid trials, "
+            logger.info(f"    Task {task.name}: {len(valid)}/{self.config.group_size} valid trials, "
                        f"avg_reward={avg_reward:.3f}, max_reward={max_reward:.3f}")
         else:
-            logger.warning(f"    Task {task.task_id}: No valid trials completed")
+            logger.warning(f"    Task {task.name}: No valid trials completed")
 
         return valid
 
@@ -500,9 +500,9 @@ class Terminus2RLTrainer:
         valid_groups: list[TrialGroup] = []
         for task, group in zip(tasks, groups):
             if isinstance(group, Exception):
-                logger.error(f"Group failed for {task.task_id}: {group}")
+                logger.error(f"Group failed for {task.name}: {group}")
             elif not group:
-                logger.warning(f"All trials failed for {task.task_id}")
+                logger.warning(f"All trials failed for {task.name}")
             else:
                 valid_groups.append(group)
 
@@ -786,15 +786,15 @@ class Terminus2RLTrainer:
         if not all_tasks:
             return [], []
         
-        # Sort tasks by task_id for reproducible splits
-        all_tasks.sort(key=lambda t: t.task_id)
+        # Sort tasks by name for reproducible splits
+        all_tasks.sort(key=lambda t: t.name)
         
         # Split based on config
         if self.config.eval_tasks is not None:
             # Use explicit eval task list
             eval_task_ids = set(self.config.eval_tasks)
-            eval_tasks = [t for t in all_tasks if t.task_id in eval_task_ids]
-            train_tasks = [t for t in all_tasks if t.task_id not in eval_task_ids]
+            eval_tasks = [t for t in all_tasks if t.name in eval_task_ids]
+            train_tasks = [t for t in all_tasks if t.name not in eval_task_ids]
             logger.info(f"Using explicit eval tasks: {len(eval_tasks)} eval, {len(train_tasks)} train")
         elif self.config.eval_split > 0:
             # Use proportional split
