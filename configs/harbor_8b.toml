@@ -1,0 +1,79 @@
+# Harbor Training with Prime-RL
+# 
+# This config trains an 8B model with LoRA on Harbor tasks using:
+# - Terminus-2 agent harness
+# - Docker sandboxes (or cloud: modal, e2b, runloop)
+# - Harbor's task format and verification system
+#
+# Usage:
+#   cd /path/to/harbortrainer
+#   uv run --directory prime-rl rl @ ../configs/harbor_8b.toml
+
+# GPU assignment
+inference_gpu_ids = [0]
+trainer_gpu_ids = [1]
+
+# Training steps
+max_steps = 200
+
+# Output directory
+output_dir = "outputs/harbor-8b-lora"
+
+# Logging
+[wandb]
+project = "harbor-rl"
+name = "harbor-8b-lora"
+
+# Model - change to your preferred 8B model
+[model]
+name = "Qwen/Qwen3-8B"
+
+# LoRA configuration
+[trainer.model.experimental.lora]
+rank = 32
+alpha = 64
+
+# Training configuration
+[trainer.optim]
+lr = 1e-5
+
+# Orchestrator configuration
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 8
+seq_len = 4096
+max_concurrent = 8
+
+# Sampling configuration
+[orchestrator.sampling]
+max_tokens = 1024
+temperature = 0.7
+
+# Harbor environment
+# NOTE: Requires PYTHONPATH to include harbortrainer root directory
+# Run with: PYTHONPATH=. uv run --directory prime-rl rl @ ../configs/harbor_8b.toml
+[[orchestrator.env]]
+id = "src.harbor_env"
+name = "harbor"
+
+[orchestrator.env.args]
+# Harbor task configuration
+tasks_dir = "datasets/terminal-bench-2"
+environment_type = "docker"
+max_turns = 20
+n_parallel_envs = 8
+
+# Context summarization (enable for 8B models with limited context)
+enable_summarize = true
+proactive_summarization_threshold = 8000
+
+# vLLM connection (auto-configured by prime-rl)
+# vllm_base_url = "http://localhost:8000/v1"
+
+# Trial timeout (optional)
+# trial_timeout_sec = 600
+
+# Inference server configuration
+[inference]
+# Default inference config - prime-rl handles this
+

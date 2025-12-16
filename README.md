@@ -1,20 +1,25 @@
-# Terminal Bench Trainer
+# Harbor Trainer
 
-Post-train open-weight models on Terminal Bench 2.0 using the [Tinker API](https://tinker-docs.thinkingmachines.ai/) and the Harbor fork at [rishidesai/harbor](https://github.com/rishidesai/harbor).
+RL training for LLM agents on Harbor tasks using Prime-RL.
 
 ## Overview
 
-This repository implements RL training for Terminal Bench 2.0 tasks using:
-- **Tinker API** for distributed LLM training (sampling + gradient computation)
-- **Harbor Framework** for trial infrastructure (Terminus2 agent, environments, verification)
+This repository implements RL training for Harbor tasks using:
+- **Prime-RL** for distributed LLM training (vLLM sampling + LoRA optimization)
+- **Harbor Framework** for trial infrastructure (Terminus-2 agent, environments, verification)
 
-The trainer uses Harbor's `Trial` to run episodes with the Terminus2 agent, collecting token-level rollout data (token IDs, logprobs) for GRPO-style policy optimization via Tinker.
+The trainer uses Harbor's `Trial` to run episodes with the Terminus-2 agent, collecting token-level rollout data (token IDs, logprobs) for GRPO-style policy optimization via Prime-RL.
 
 ## Installation
 
 ```bash
-uv pip install -e .  # installs Harbor from https://github.com/rishidesai/harbor
-docker login         # optional but recommended for pulling/pushing images
+# Clone with submodules
+git clone --recursive https://github.com/yourusername/harbortrainer
+cd harbortrainer
+
+# Install dependencies
+uv pip install -e .
+docker login  # optional but recommended for pulling/pushing images
 ```
 
 ## Quick Start
@@ -22,7 +27,6 @@ docker login         # optional but recommended for pulling/pushing images
 ### 1. Set up credentials in `.env`
 
 ```bash
-TINKER_API_KEY="your-api-key"
 WANDB_API_KEY="your-api-key"
 TOKENIZERS_PARALLELISM=false
 ```
@@ -32,7 +36,7 @@ TOKENIZERS_PARALLELISM=false
 Tasks follow the [Harbor task format](https://harborframework.com/docs/task-format):
 
 ```
-terminal-bench-2/
+datasets/harbor_tasks/
 ├── task_name/
 │   ├── task.toml           # Task configuration
 │   ├── instruction.md      # Task description for the agent
@@ -46,70 +50,80 @@ terminal-bench-2/
 
 ### 3. Run training
 
+Using the provided wrapper:
+
 ```bash
-python -m src.train \
-  model_name=Qwen/Qwen3-235B-A22B-Instruct-2507  \
-  tasks_dir=./datasets/terminal-bench-2 \
-  learning_rate=2e-4 \
-  batch_size=1 \
-  group_size=8 \
-  n_parallel_envs=8 \
-  max_tokens=1024 \
-  temperature=0.7 \
-  context_limit=32000 \
-  proactive_summarization_threshold=2000 \
-  enable_summarize=true \
-  n_epochs=2 \
-  num_substeps=4 \
-  remove_constant_reward_groups=true \
-  normalize_advantages_by_std=true \
-  loss_fn=ppo \
-  environment_type=docker \
-  wandb_project=harbor-training \
-  wandb_name=test-run
+python -m src.train --config configs/harbor_8b.toml
 ```
 
-or `bash run.sh`
+Or using Prime-RL directly:
 
-Note: Tinker currently limits context length to 32K (see [tinker-cookbook issue #105](https://github.com/thinking-machines-lab/tinker-cookbook/issues/105)).
+```bash
+PYTHONPATH=. uv run --directory prime-rl rl @ configs/harbor_8b.toml
+```
 
 ## Project Structure
 
 ```
 .
 ├── src/
-│   ├── tinker_llm.py          # TinkerLLM - Tinker sampling backend for Harbor
-│   ├── terminus2_trainer.py   # GRPO trainer using Harbor Trial
-│   └── train.py               # CLI entry point
+│   ├── harbor_env.py       # HarborEnvironment - verifiers Environment wrapper
+│   ├── train.py            # CLI entry point
+│   └── __init__.py
+├── configs/
+│   ├── harbor_8b.toml      # 8B model training config (local Docker)
+│   └── harbor_8b_modal.toml # 8B model training config (Modal cloud)
+├── prime-rl/               # Prime-RL submodule
+└── datasets/
+    └── harbor_tasks/       # Your Harbor tasks
 ```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Terminus2RLTrainer                       │
+│                    HarborEnvironment                        │
+│              (verifiers.Environment wrapper)                │
 ├─────────────────────────────────────────────────────────────┤
-│  For each batch of tasks:                                   │
-│    1. Run Harbor Trials with TinkerLLM backend              │
+│  For each rollout:                                          │
+│    1. Run Harbor Trial with Terminus-2 agent                │
 │    2. Collect rollout_details (token IDs, logprobs)         │
-│    3. Compute GRPO advantages (reward centering)            │
-│    4. Build Tinker Datums and train via TrainingClient      │
+│    3. Get rewards from Harbor verifier                      │
+│    4. Return trajectory in verifiers State format           │
 └─────────────────────────────────────────────────────────────┘
          │                              │
          ▼                              ▼
 ┌─────────────────┐          ┌─────────────────────┐
-│  Harbor Trial   │          │   Tinker API        │
-│  - Terminus2    │          │   - SamplingClient  │
-│  - Environments │          │   - TrainingClient  │
-│  - Verification │          │   - LoRA weights    │
+│  Harbor Trial   │          │   Prime-RL          │
+│  - Terminus-2   │          │   - vLLM server     │
+│  - Environments │          │   - LoRA training   │
+│  - Verification │          │   - Weight updates  │
 └─────────────────┘          └─────────────────────┘
+```
+
+## Configuration
+
+Edit `configs/harbor_8b.toml` to customize training:
+
+```toml
+[[orchestrator.env]]
+id = "harbor_env"
+name = "harbor"
+args = { 
+    tasks_dir = "datasets/harbor_tasks",
+    environment_type = "docker",  # or "modal", "e2b", etc.
+    vllm_base_url = "http://localhost:8000/v1",
+    model_name = "Qwen/Qwen3-8B-Instruct",
+    n_parallel_envs = 8,
+    max_turns = 20,
+}
 ```
 
 ## References
 
-- [Tinker API Documentation](https://tinker-docs.thinkingmachines.ai/)
-- [Tinker Cookbook](https://github.com/thinking-machines-lab/tinker-cookbook)
+- [Prime-RL](https://github.com/allenai/prime-rl)
 - [Harbor Framework](https://harborframework.com/)
+- [Terminus-2 Agent](https://harborframework.com/docs/agents/terminus-2)
 
 ## License
 

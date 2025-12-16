@@ -1,3 +1,7 @@
 [submodule "prime-rl"]
 	path = prime-rl
-	url = https://github.com/PrimeIntellect-ai/prime-rl.git
+	url = https://github.com/RishiDesai/prime-rl.git
+
+[submodule "verifiers"]
+	path = verifiers
+	url = https://github.com/PrimeIntellect-ai/verifiers.git

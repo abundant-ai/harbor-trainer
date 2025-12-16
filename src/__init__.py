@@ -1,10 +1,3 @@
-"""
-Terminal Bench Trainer
+from src.harbor_env import HarborEnvironment, load_environment
 
-Post-training LLMs on terminal benchmarks using the Tinker API.
-"""
-
-__version__ = "0.1.0"
-
-from .terminus2_trainer import Terminus2RLTrainer, TrainerConfig
-from .tinker_llm import TinkerLLM, LogprobsMissingError
+__all__ = ["HarborEnvironment", "load_environment"]
