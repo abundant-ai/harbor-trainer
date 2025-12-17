@@ -1,226 +1,112 @@
 from __future__ import annotations
 
-import asyncio
-import json
+import argparse
 import logging
 import os
+import subprocess
+import sys
 from pathlib import Path
-from typing import Literal
 
-import chz
 from dotenv import load_dotenv
-
-from src.terminus2_trainer import Terminus2RLTrainer, TrainerConfig
 
 load_dotenv()
 
-
-@chz.chz
-class CLIConfig:
-    """CLI configuration for Terminus2 RL training."""
-
-    # Required
-    model_name: str = chz.field(doc="Model name (e.g., 'deepseek-ai/DeepSeek-V3.1')")
-    tasks_dir: str = chz.field(doc="Directory containing Harbor tasks")
-
-    # Directories
-    logs_dir: str = chz.field(
-        default="/tmp/terminus2-training",
-        doc="Logs directory",
-        munger=lambda _, s: os.path.expanduser(s),
-    )
-
-    # Tinker configuration
-    tinker_base_url: str | None = chz.field(default=None, doc="Tinker API base URL")
-    lora_rank: int = chz.field(default=32, doc="LoRA rank")
-
-    # Training hyperparameters
-    learning_rate: float = chz.field(default=5e-4, doc="Learning rate")
-    batch_size: int = chz.field(default=1, doc="Tasks per batch")
-    group_size: int = chz.field(default=8, doc="Rollouts per task (GRPO group size)")
-    n_epochs: int = chz.field(default=1, doc="Number of epochs")
-    
-    # Train/Eval split
-    eval_split: float = chz.field(
-        default=0.2,
-        doc="Fraction of tasks for evaluation (0.0 = no eval, 0.2 = 20% eval)"
-    )
-    eval_tasks: list[str] | None = chz.field(
-        default=None,
-        doc="Specific task IDs for eval (overrides eval_split if provided)"
-    )
-    eval_group_size: int | None = chz.field(
-        default=None,
-        doc="Rollouts per task during eval (None = use group_size)"
-    )
-
-    # RL hyperparameters
-    loss_fn: Literal["importance_sampling", "ppo"] = chz.field(
-        default="ppo",
-        doc="Loss function: 'importance_sampling' (REINFORCE) or 'ppo'",
-    )
-    num_substeps: int = chz.field(
-        default=1,
-        doc="Optimizer substeps per batch (PPO-style multi-epoch)",
-    )
-    remove_constant_reward_groups: bool = chz.field(
-        default=False,
-        doc="Remove groups where all rollouts have the same reward",
-    )
-    normalize_advantages_by_std: bool = chz.field(
-        default=True,
-        doc="Normalize advantages by standard deviation (GRPO-style)",
-    )
-    kl_penalty_coef: float = chz.field(
-        default=0.0,
-        doc="KL penalty coefficient for regularization against base model (0 = disabled)",
-    )
-
-    # Agent configuration
-    max_turns: int | None = chz.field(
-        default=None,
-        doc="Max agent turns (None = unlimited)",
-    )
-    temperature: float = chz.field(default=0.7, doc="Sampling temperature")
-    max_tokens: int = chz.field(default=1024, doc="Max tokens per generation")
-    context_limit: int = chz.field(default=32000, doc="Model context limit")
-
-    enable_summarize: bool = chz.field(
-        default=True,
-        doc="Enable context summarization when context is full (matches Terminus 2 eval)",
-    )
-    proactive_summarization_threshold: int = chz.field(
-        default=8000,
-        doc="Trigger proactive summarization when free tokens fall below this threshold",
-    )
-
-    # Environment configuration
-    environment_type: Literal["docker", "daytona", "modal", "e2b", "runloop"] = chz.field(
-        default="docker",
-        doc="Environment backend: docker (local), daytona/modal/e2b/runloop (cloud)",
-    )
-    environment_kwargs: list[str] | None = chz.field(
-        default=None,
-        doc=(
-            "Environment kwargs in key=value form (can be repeated). "
-            "Common: override_cpus, override_memory_mb, override_storage_mb. "
-            "Modal-only: add_python_version=3.11 to auto-install Python. "
-            "Examples: timeout=300, override_cpus=4"
-        ),
-    )
-    n_parallel_envs: int = chz.field(
-        default=8,
-        doc="Parallel environments. Keep low (1-2) for docker, higher for cloud",
-    )
-    trial_timeout_sec: float | None = chz.field(
-        default=None,
-        doc="Optional timeout (seconds) per trial; None uses task defaults",
-    )
-
-    # Logging and checkpoints
-    wandb_project: str | None = chz.field(default=None, doc="Weights & Biases project")
-    wandb_name: str | None = chz.field(default=None, doc="Weights & Biases run name")
-    save_every: int = chz.field(default=20, doc="Save checkpoint every N batches")
+logger = logging.getLogger(__name__)
 
 
-def _parse_kwargs(kwargs_list: list[str] | None) -> dict[str, object]:
-    """Parse key=value strings; values are JSON if possible, else strings."""
-    if not kwargs_list:
-        return {}
-    parsed: dict[str, object] = {}
-    for item in kwargs_list:
-        if "=" not in item:
-            raise ValueError(f"Invalid environment kwarg: {item}. Expected key=value")
-        key, value = item.split("=", 1)
-        try:
-            parsed[key.strip()] = json.loads(value)
-        except json.JSONDecodeError:
-            parsed[key.strip()] = value.strip()
-    return parsed
-
-
-async def run_training(config: CLIConfig) -> None:
-    """Run Terminus2 RL training."""
-    logger = logging.getLogger(__name__)
-
-    logger.info("=" * 60)
-    logger.info("Starting Terminus2 RL Training")
-    logger.info("=" * 60)
-    logger.info(f"Model: {config.model_name}")
-    logger.info(f"Tasks: {config.tasks_dir}")
-    logger.info(f"Environment: {config.environment_type} (n_parallel={config.n_parallel_envs})")
-    logger.info(f"Batch size: {config.batch_size}, Group size: {config.group_size}")
-    logger.info(f"Loss function: {config.loss_fn}, Substeps: {config.num_substeps}")
-    logger.info(f"Context summarization: {config.enable_summarize} (threshold: {config.proactive_summarization_threshold})")
-    logger.info("=" * 60)
-
-    trainer_config = TrainerConfig(
-        model_name=config.model_name,
-        tasks_dir=Path(config.tasks_dir),
-        logs_dir=Path(config.logs_dir),
-        tinker_base_url=config.tinker_base_url,
-        lora_rank=config.lora_rank,
-        learning_rate=config.learning_rate,
-        batch_size=config.batch_size,
-        group_size=config.group_size,
-        n_epochs=config.n_epochs,
-        eval_split=config.eval_split,
-        eval_tasks=config.eval_tasks,
-        eval_group_size=config.eval_group_size,
-        loss_fn=config.loss_fn,
-        num_substeps=config.num_substeps,
-        remove_constant_reward_groups=config.remove_constant_reward_groups,
-        normalize_advantages_by_std=config.normalize_advantages_by_std,
-        kl_penalty_coef=config.kl_penalty_coef,
-        max_turns=config.max_turns,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
-        context_limit=config.context_limit,
-        enable_summarize=config.enable_summarize,
-        proactive_summarization_threshold=config.proactive_summarization_threshold,
-        environment_type=config.environment_type,
-        environment_kwargs=_parse_kwargs(config.environment_kwargs),
-        n_parallel_envs=config.n_parallel_envs,
-        trial_timeout_sec=config.trial_timeout_sec,
-        wandb_project=config.wandb_project,
-        wandb_name=config.wandb_name,
-        save_every=config.save_every,
-    )
-
-    trainer = Terminus2RLTrainer(trainer_config)
-    await trainer.train()
-
-    logger.info("Training complete!")
-
-
-def main() -> None:
-    """Entry point for training."""
-    # Set root logger to WARNING to suppress verbose library logs
+def setup_logging(level: str = "INFO"):
+    """Configure logging."""
     logging.basicConfig(
-        level=logging.WARNING,
+        level=getattr(logging, level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    
-    # Enable INFO logs only for our own modules
-    logging.getLogger("__main__").setLevel(logging.INFO)
-    logging.getLogger("src.terminus2_trainer").setLevel(logging.INFO)
-    logging.getLogger("src.tinker_llm").setLevel(logging.INFO)
-    
-    # Keep tinker-cookbook at INFO for training metrics
-    logging.getLogger("tinker_cookbook.utils.ml_log").setLevel(logging.INFO)
-    
-    # Suppress verbose Harbor logs (Docker/environment operations)
-    # Harbor uses its own logger system - suppress all Harbor loggers
+    # Suppress verbose logs
     logging.getLogger("harbor").setLevel(logging.WARNING)
-    logging.getLogger("harbor.utils.logger").setLevel(logging.WARNING)
-    
-    # Also suppress all child loggers that might be created by Harbor
-    for name in list(logging.Logger.manager.loggerDict.keys()):
-        if name.startswith("harbor"):
-            logging.getLogger(name).setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    config = chz.entrypoint(CLIConfig)
-    asyncio.run(run_training(config))
+
+def run_training(config_path: Path):
+    """
+    Launch Prime-RL training with the given config.
+    
+    This wraps prime-rl's `rl` command for convenience.
+    """
+    # Ensure prime-rl directory exists
+    prime_rl_dir = Path(__file__).parent.parent / "prime-rl"
+    if not prime_rl_dir.exists():
+        logger.error(f"prime-rl directory not found at {prime_rl_dir}")
+        sys.exit(1)
+    
+    # Build command
+    cmd = [
+        "uv", "run",
+        "--directory", str(prime_rl_dir),
+        "rl", "@", str(config_path.absolute()),
+    ]
+    
+    logger.info(f"Starting training with config: {config_path}")
+    logger.info(f"Command: {' '.join(cmd)}")
+    
+    # Set PYTHONPATH to include src directory so prime-rl can import harbor_env
+    env = os.environ.copy()
+    src_dir = Path(__file__).parent.parent
+    python_path = env.get("PYTHONPATH", "")
+    if python_path:
+        env["PYTHONPATH"] = f"{src_dir}:{python_path}"
+    else:
+        env["PYTHONPATH"] = str(src_dir)
+    
+    # Run training
+    try:
+        subprocess.run(cmd, env=env, check=True)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Training failed with exit code {e.returncode}")
+        sys.exit(e.returncode)
+    except KeyboardInterrupt:
+        logger.info("Training interrupted")
+        sys.exit(130)
+
+
+def main():
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="Launch Harbor RL training with Prime-RL",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    # Train 8B model with LoRA on Harbor tasks:
+    python -m src.train --config configs/harbor_8b.toml
+    
+    # Train with Modal cloud sandboxes:
+    python -m src.train --config configs/harbor_8b_modal.toml
+    
+    # Direct prime-rl usage (alternative):
+    cd harbortrainer
+    PYTHONPATH=. uv run --directory prime-rl rl @ configs/harbor_8b.toml
+""",
+    )
+    parser.add_argument(
+        "--config", "-c",
+        type=Path,
+        required=True,
+        help="Path to prime-rl config file (TOML)",
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level (default: INFO)",
+    )
+    
+    args = parser.parse_args()
+    
+    setup_logging(args.log_level)
+    
+    if not args.config.exists():
+        logger.error(f"Config file not found: {args.config}")
+        sys.exit(1)
+    
+    run_training(args.config)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,15 @@
+[submodule "prime-rl"]
+	path = prime-rl
+	url = https://github.com/RishiDesai/prime-rl.git
+
+[submodule "verifiers"]
+	path = verifiers
+	url = https://github.com/PrimeIntellect-ai/verifiers.git
+
+[submodule "harbor"]
+	path = harbor
+	url = https://github.com/RishiDesai/harbor.git
+
+[submodule "harbor_tasks/terminal-bench-2"]
+	path = harbor_tasks/terminal-bench-2
+	url = https://github.com/laude-institute/terminal-bench-2

@@ -1,14 +1,12 @@
 [project]
-name = "terminal-bench-trainer"
-version = "0.1.0"
-description = "Post-training Qwen on terminal bench using the Tinker API"
+name = "harbortrainer"
+version = "0.2.0"
+description = "RL training for LLM agents on Harbor tasks using Prime-RL"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    # Tinker API and cookbook
-    "tinker>=0.6.1",
-    "chz",
-    "cloudpickle",
+    # Prime-RL (includes verifiers)
+    "prime-rl @ {root:uri}/prime-rl",
     
     # Core ML
     "torch",
@@ -19,11 +17,9 @@ dependencies = [
     "datasets",
     "blobfile",
     
-    # Terminal/Container execution
+    # Harbor (terminal/container execution)
     "docker",
     "harbor @ git+https://github.com/rishidesai/harbor.git",
-    "terminal-bench",
-    "tinker-cookbook",
     
     # Utilities
     "rich",
@@ -31,11 +27,11 @@ dependencies = [
     "anyio",
     "pydantic>=2.0",
     "tomli",
-    "openai-harmony",
+    "openai",
+    "litellm",
     
     # Logging
     "wandb",
-    "weave",
     
     # Environment
     "python-dotenv",
@@ -50,11 +46,32 @@ dev = [
 ]
 
 [project.scripts]
-train = "src.train:main"
+# Entry point for harbor_env (for prime-rl to import)
+harbor-train = "src.train:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+override-dependencies = [
+    "openai>=1.106.1",
+]
+no-build-isolation-package = ["flash-attn"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/test/cu128"
+explicit = true
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -68,7 +85,7 @@ python_files = ["test_*.py", "*_test.py"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]

@@ -4,6 +4,8 @@ set -e  # Exit on error
 
 echo "🚀 Setting up Terminal Bench Trainer..."
 
+git submodule update --init --recursive 
+
 # Color codes for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -12,7 +14,7 @@ MIN_PYTHON="3.11"
 TARGET_PYTHON="3.12"
 
 # 1. Install uv if not already installed
-echo -e "\n${GREEN}[1/6] Checking for uv...${NC}"
+echo -e "\n${GREEN}[1/7] Checking for uv...${NC}"
 if ! command -v uv &> /dev/null; then
     echo "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -36,7 +38,7 @@ else
 fi
 
 # 2. Check and install Python 3.12+
-echo -e "\n${GREEN}[2/6] Checking Python version (>=${MIN_PYTHON}, prefer ${TARGET_PYTHON})...${NC}"
+echo -e "\n${GREEN}[2/7] Checking Python version (>=${MIN_PYTHON}, prefer ${TARGET_PYTHON})...${NC}"
 if ! python3 -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
     PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}' || echo "unknown")
     echo "Current Python version: $PYTHON_VERSION"
@@ -56,14 +58,49 @@ fi
 PYTHON_BIN=$(uv python find "${TARGET_PYTHON}" 2>/dev/null || command -v python3)
 echo "Using Python interpreter: ${PYTHON_BIN}"
 
-# 3. Create virtual environment and install dependencies
-echo -e "\n${GREEN}[3/6] Setting up virtual environment and installing dependencies...${NC}"
+# 3. Ensure Python development headers are available (needed for torch/tvm extensions)
+echo -e "\n${GREEN}[3/7] Ensuring Python development headers (Python.h)...${NC}"
+if "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+import sysconfig
+from pathlib import Path
+hdr = Path(sysconfig.get_paths().get("include", "")) / "Python.h"
+raise SystemExit(0 if hdr.exists() else 1)
+PY
+then
+    echo "✓ Python.h found"
+else
+    PY_MM=$("$PYTHON_BIN" - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+)
+    DEV_PKG="python${PY_MM}-dev"
+    if command -v apt-get &> /dev/null; then
+        echo "Installing Python headers via apt (${DEV_PKG})..."
+        sudo apt-get update -qq
+        if sudo apt-get install -y "${DEV_PKG}"; then
+            echo "✓ Installed ${DEV_PKG}"
+        else
+            echo -e "${YELLOW}⚠️  Failed to install ${DEV_PKG}, trying python3-dev...${NC}"
+            if sudo apt-get install -y python3-dev; then
+                echo "✓ Installed python3-dev fallback"
+            else
+                echo -e "${YELLOW}⚠️  Could not install Python headers automatically. Please install ${DEV_PKG} (or python3-dev) manually.${NC}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}⚠️  Cannot install Python headers automatically on this system. Please install ${DEV_PKG} (or python3-dev) so Python.h is available.${NC}"
+    fi
+fi
+
+# 4. Create virtual environment and install dependencies
+echo -e "\n${GREEN}[4/7] Setting up virtual environment and installing dependencies...${NC}"
 uv venv --python "$PYTHON_BIN"
 source .venv/bin/activate
 uv pip install -e .
 
-# 4. Create .env file if it doesn't exist
-echo -e "\n${GREEN}[4/6] Setting up .env file...${NC}"
+# 5. Create .env file if it doesn't exist
+echo -e "\n${GREEN}[5/7] Setting up .env file...${NC}"
 if [ ! -f .env ]; then
     echo "Creating .env file..."
     cat > .env << 'EOF'
@@ -78,27 +115,112 @@ else
     echo "✓ .env file already exists"
 fi
 
-# 5. Check for Docker
-echo -e "\n${GREEN}[5/6] Checking Docker...${NC}"
+# 6. Check for Docker and Docker Compose V2
+echo -e "\n${GREEN}[6/7] Checking Docker...${NC}"
 if ! command -v docker &> /dev/null; then
-    echo -e "${YELLOW}⚠️  Docker is not installed. Please install Docker to continue.${NC}"
+    echo -e "${YELLOW}⚠️  Docker is not installed. Installing Docker...${NC}"
+    
+    # Try to install Docker on Ubuntu/Debian systems
+    if command -v apt-get &> /dev/null; then
+        echo "Updating package list..."
+        sudo apt-get update -qq
+        echo "Installing docker.io..."
+        if sudo apt-get install -y docker.io; then
+            echo "✓ Docker installed successfully"
+            
+            # Start Docker service
+            echo "Starting Docker service..."
+            sudo systemctl start docker
+            sudo systemctl enable docker
+            
+            # Add user to docker group
+            echo "Adding $USER to docker group..."
+            sudo usermod -aG docker "$USER"
+            echo -e "${YELLOW}⚠️  You may need to log out and back in, or run: newgrp docker${NC}"
+            
+            # Try to fix permissions for current session
+            sudo chmod 666 /var/run/docker.sock 2>/dev/null
+        else
+            echo -e "${YELLOW}⚠️  Failed to install Docker automatically.${NC}"
+            echo "   Please install Docker manually and re-run this script."
+            echo "   See: https://docs.docker.com/engine/install/"
+        fi
+    else
+        echo -e "${YELLOW}⚠️  Cannot install Docker automatically on this system.${NC}"
+        echo "   Please install Docker manually:"
+        echo "   https://docs.docker.com/engine/install/"
+    fi
 else
     echo "✓ Docker is installed"
+    
+    # Check Docker daemon access
     if docker info &> /dev/null; then
-        echo "✓ Docker daemon is running"
+        echo "✓ Docker daemon is running and accessible"
     else
-        echo -e "${YELLOW}⚠️  Docker daemon is not running. Please start Docker.${NC}"
+        echo -e "${YELLOW}⚠️  Cannot access Docker daemon.${NC}"
+        # Check if it's a permission issue
+        if [ -S /var/run/docker.sock ]; then
+            echo "   Docker socket exists but you may not have permission."
+            echo "   Adding user to docker group..."
+            if sudo usermod -aG docker "$USER" 2>/dev/null; then
+                echo "   ✓ Added $USER to docker group"
+                echo -e "${YELLOW}   ⚠️  You may need to log out and back in, or run: newgrp docker${NC}"
+            fi
+            # Also try fixing socket permissions as a fallback
+            if ! docker info &> /dev/null 2>&1; then
+                echo "   Fixing Docker socket permissions..."
+                sudo chmod 666 /var/run/docker.sock 2>/dev/null && echo "   ✓ Fixed socket permissions"
+            fi
+        else
+            echo -e "${YELLOW}   Docker daemon may not be running. Please start Docker.${NC}"
+        fi
     fi
 fi
 
-# 6. Docker login prompt
-echo -e "\n${GREEN}[6/6] Docker login...${NC}"
+# Check for Docker Compose V2 (required by Harbor) - must run after Docker is installed
+if command -v docker &> /dev/null; then
+    if docker compose version &> /dev/null; then
+        COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || docker compose version | grep -oP '\d+\.\d+\.\d+' | head -1)
+        echo "✓ Docker Compose V2 is installed (version: ${COMPOSE_VERSION})"
+    else
+        echo -e "${YELLOW}⚠️  Docker Compose V2 not found. Installing...${NC}"
+        # Try Ubuntu/Debian package first
+        if command -v apt-get &> /dev/null; then
+            if sudo apt-get update -qq && sudo apt-get install -y docker-compose-v2; then
+                echo "✓ Docker Compose V2 installed via apt"
+            else
+                echo -e "${YELLOW}   Could not install docker-compose-v2 via apt.${NC}"
+                echo "   Please install Docker Compose V2 manually:"
+                echo "   https://docs.docker.com/compose/install/"
+            fi
+        else
+            echo -e "${YELLOW}   Please install Docker Compose V2 manually:${NC}"
+            echo "   https://docs.docker.com/compose/install/"
+        fi
+    fi
+fi
+
+# 7. Docker login prompt
+echo -e "\n${GREEN}[7/7] Docker login...${NC}"
 echo "You may need to login to Docker Hub to pull prebuilt images."
 read -p "Do you want to run 'docker login' now? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     docker login
 fi
+
+
+cd datasets/
+
+curl -L -o extract_parquet_tasks.py \
+  "https://huggingface.co/datasets/open-thoughts/OpenThoughts-Agent-v1-RL/raw/main/extract_parquet_tasks.py"
+
+curl -L -o tasks.parquet \
+  "https://huggingface.co/datasets/open-thoughts/OpenThoughts-Agent-v1-RL/resolve/main/tasks.parquet"
+
+python extract_parquet_tasks.py tasks.parquet ./extracted_tasks
+
+cd ../
 
 # Final instructions
 echo -e "\n${GREEN}✅ Setup complete!${NC}"
@@ -113,4 +235,3 @@ echo -e "       tasks_dir=./terminal-bench-2 \\"
 echo -e "       wandb_project=train-qwen \\"
 echo -e "       wandb_name=qwen-run${NC}"
 echo -e "\nFor more information, see README.md"
-
