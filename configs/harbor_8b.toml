@@ -41,8 +41,8 @@ lr = 1e-5
 # Orchestrator configuration
 [orchestrator]
 # batch_size must be divisible by rollouts_per_example
-batch_size = 4
-rollouts_per_example = 8
+batch_size = 32
+rollouts_per_example = 4
 # seq_len should accommodate multi-turn agent trajectories
 seq_len = 8192
 # max_concurrent controls parallel env generations
@@ -66,15 +66,14 @@ tasks_dir = "harbor_tasks/extracted_tasks"
 # Sandbox type: "docker", "modal", "e2b", "runloop"
 environment_type = "docker"
 
-# Maximum agent turns per trial
-max_turns = 100000
+# Maximum agent turns per trial (set to "none" for unlimited, agent will be constrained by trial_timeout_sec)
+max_turns = "none"
 
 # Parallel trial execution limit (should match orchestrator.max_concurrent)
 n_parallel_envs = 32
 
-# Context summarization for models with limited context window
-# Enable for 8B models, disable for larger models with 32k+ context
-enable_summarize = true
+# Context summarization for models
+enable_summarize = false
 proactive_summarization_threshold = 6000
 
 # vLLM connection - auto-configured by prime-rl inference server
@@ -82,6 +81,12 @@ proactive_summarization_threshold = 6000
 
 # Model name - must match [model] section
 model_name = "Qwen/Qwen3-8B"
+
+# Model info to avoid LiteLLM warnings
+[orchestrator.env.args.model_info]
+max_tokens = 32768
+max_input_tokens = 32768
+max_output_tokens = 32768
 
 # Trial timeout in seconds (optional)
 # trial_timeout_sec = 600.0

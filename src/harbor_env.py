@@ -35,6 +35,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class MockUsage:
+    """Mock OpenAI usage object for token counting."""
+    def __init__(self, prompt_tokens: int, completion_tokens: int):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = prompt_tokens + completion_tokens
+
+
+class MockResponse:
+    """Mock OpenAI response object with usage information."""
+    def __init__(self, prompt_tokens: int, completion_tokens: int):
+        self.usage = MockUsage(prompt_tokens, completion_tokens)
+
+
 def harbor_verification_reward(state: State, **kwargs) -> float:
     """
     Reward function that extracts Harbor's verification result from state.
@@ -64,7 +78,7 @@ class HarborEnv(vf.MultiTurnEnv):
         tasks_dir: str = "harbor_tasks/extracted_tasks",
         environment_type: str = "docker",
         environment_kwargs: dict[str, Any] | None = None,
-        max_turns: int = 20,
+        max_turns: int | None = None,
         enable_summarize: bool = True,
         proactive_summarization_threshold: int = 8000,
         trial_timeout_sec: float | None = None,
@@ -100,7 +114,13 @@ class HarborEnv(vf.MultiTurnEnv):
         self.tasks_dir = Path(tasks_dir)
         self.environment_type = environment_type
         self.environment_kwargs = environment_kwargs or {}
-        self.harbor_max_turns = max_turns
+        
+        # Handle max_turns: support None (unlimited), int, or string "none"
+        if isinstance(max_turns, str) and max_turns.lower() in ("none", "null", "unlimited"):
+            self.harbor_max_turns = None
+        else:
+            self.harbor_max_turns = max_turns
+        
         self.enable_summarize = enable_summarize
         self.proactive_summarization_threshold = proactive_summarization_threshold
         self.trial_timeout_sec = trial_timeout_sec
@@ -421,11 +441,17 @@ class HarborEnv(vf.MultiTurnEnv):
                     is_truncated=False,
                 )
                 
+                # Create mock response with usage information for prime-rl
+                mock_response = MockResponse(
+                    prompt_tokens=len(prompt_ids),
+                    completion_tokens=len(completion_ids)
+                )
+                
                 # Create trajectory step
                 step = TrajectoryStep(
                     prompt=state["prompt"],  # Original prompt
                     completion=[],  # Message format - not needed for token training
-                    response=None,  # Raw response object
+                    response=mock_response,  # Mock response with usage info
                     tokens=tokens,
                     reward=None,  # Set at group level
                     advantage=None,  # Set at group level
@@ -440,11 +466,25 @@ class HarborEnv(vf.MultiTurnEnv):
         if not trajectory:
             # Create a minimal trajectory step for failed/empty trials
             # This prevents IndexError when verifiers tries to access state["trajectory"][-1]
+            # Even for failed trials, we need to provide token structure for prime-rl
+            mock_response = MockResponse(prompt_tokens=1, completion_tokens=1)
+            
+            # Create minimal tokens structure (prime-rl requires this)
+            minimal_tokens = TrajectoryStepTokens(
+                prompt_ids=[0],  # Minimal prompt token
+                prompt_mask=[0],
+                completion_ids=[0],  # Minimal completion token
+                completion_mask=[0],  # Don't train on failed trials
+                completion_logprobs=[0.0],
+                overlong_prompt=False,
+                is_truncated=False,
+            )
+            
             trajectory.append(TrajectoryStep(
                 prompt=state.get("prompt", []),
                 completion=[{"role": "assistant", "content": "[Trial failed - no completion]"}],
-                response=None,
-                tokens=None,  # No tokens for failed trial
+                response=mock_response,  # Mock response even for failed trials
+                tokens=minimal_tokens,  # Provide minimal tokens instead of None
                 reward=None,
                 advantage=None,
                 extras={"error": "Harbor trial produced no turns"},
@@ -472,7 +512,7 @@ def load_environment(
     tasks_dir: str = "harbor_tasks/extracted_tasks",
     environment_type: str = "docker",
     environment_kwargs: dict[str, Any] | None = None,
-    max_turns: int = 20,
+    max_turns: int | None = None,
     enable_summarize: bool = True,
     proactive_summarization_threshold: int = 8000,
     trial_timeout_sec: float | None = None,

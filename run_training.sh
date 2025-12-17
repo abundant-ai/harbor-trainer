@@ -94,6 +94,11 @@ export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
 echo "PYTHONPATH: $PYTHONPATH"
 echo ""
 
+# Disable ANSI color codes in log files for better readability
+export NO_COLOR=1
+export LOGURU_COLORIZE=false
+export TERM=dumb
+
 echo "Starting training..."
 echo "Command: uv run rl @ $CONFIG"
 echo ""
