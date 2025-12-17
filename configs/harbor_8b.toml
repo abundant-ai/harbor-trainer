@@ -73,7 +73,10 @@ max_turns = "none"
 n_parallel_envs = 32
 
 # Context summarization for models
-enable_summarize = false
+# Summarization is treated as part of the environment (subagent).
+# Only main agent's post-summarization tokens are trained on.
+# This preserves GRPO validity while enabling long-horizon tasks.
+enable_summarize = true
 proactive_summarization_threshold = 6000
 
 # vLLM connection - auto-configured by prime-rl inference server
