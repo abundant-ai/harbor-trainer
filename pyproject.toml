@@ -3,11 +3,10 @@ name = "harbortrainer"
 version = "0.2.0"
 description = "RL training for LLM agents on Harbor tasks using Prime-RL"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     # Prime-RL (includes verifiers)
     "prime-rl @ {root:uri}/prime-rl",
-    "verifiers @ {root:uri}/verifiers-lib",
     
     # Core ML
     "torch",
@@ -54,6 +53,26 @@ harbor-train = "src.train:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+override-dependencies = [
+    "openai>=1.106.1",
+]
+no-build-isolation-package = ["flash-attn"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/test/cu128"
+explicit = true
+
 [tool.hatch.metadata]
 allow-direct-references = true
 
@@ -66,7 +85,7 @@ python_files = ["test_*.py", "*_test.py"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]

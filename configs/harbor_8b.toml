@@ -1,15 +1,16 @@
 # Harbor Training with Prime-RL
 # 
 # This config trains an 8B model with LoRA on Harbor tasks using:
-# - Terminus-2 agent harness
+# - Terminus-2 agent harness (with token ID + logprob collection)
 # - Docker sandboxes (or cloud: modal, e2b, runloop)
 # - Harbor's task format and verification system
+# - Verifiers Environment integration for RL training
 #
 # Usage:
 #   cd /path/to/harbortrainer
-#   uv run --directory prime-rl rl @ ../configs/harbor_8b.toml
+#   PYTHONPATH=. uv run --directory prime-rl prime-rl @ ../configs/harbor_8b.toml
 
-# GPU assignment
+# GPU assignment (adjust based on your setup)
 inference_gpu_ids = [0]
 trainer_gpu_ids = [1]
 
@@ -17,7 +18,7 @@ trainer_gpu_ids = [1]
 max_steps = 200
 
 # Output directory
-output_dir = "outputs/harbor-8b-lora"
+output_dir = "prime-rl/outputs/harbor-8b-lora"
 
 # Logging
 [wandb]
@@ -28,7 +29,7 @@ name = "harbor-8b-lora"
 [model]
 name = "Qwen/Qwen3-8B"
 
-# LoRA configuration
+# LoRA configuration for parameter-efficient training
 [trainer.model.experimental.lora]
 rank = 32
 alpha = 64
@@ -39,41 +40,60 @@ lr = 1e-5
 
 # Orchestrator configuration
 [orchestrator]
-batch_size = 64
-rollouts_per_example = 8
-seq_len = 4096
-max_concurrent = 8
+# batch_size must be divisible by rollouts_per_example
+batch_size = 32
+rollouts_per_example = 4
+# seq_len should accommodate multi-turn agent trajectories
+seq_len = 8192
+# max_concurrent controls parallel env generations
+max_concurrent = 4
 
-# Sampling configuration
+# Sampling configuration for vLLM
 [orchestrator.sampling]
-max_tokens = 1024
+max_tokens = 2048
 temperature = 0.7
 
-# Harbor environment
-# NOTE: Requires PYTHONPATH to include harbortrainer root directory
-# Run with: PYTHONPATH=. uv run --directory prime-rl rl @ ../configs/harbor_8b.toml
+# Harbor Environment Configuration
+# The environment module is loaded by verifiers' load_environment()
 [[orchestrator.env]]
 id = "src.harbor_env"
 name = "harbor"
 
 [orchestrator.env.args]
-# Harbor task configuration
-tasks_dir = "datasets/terminal-bench-2"
+# Harbor task directory (relative to workspace root)
+tasks_dir = "harbor_tasks/extracted_tasks"
+
+# Sandbox type: "docker", "modal", "e2b", "runloop"
 environment_type = "docker"
+
+# Maximum agent turns per trial
 max_turns = 20
-n_parallel_envs = 8
 
-# Context summarization (enable for 8B models with limited context)
+# Parallel trial execution limit (should match orchestrator.max_concurrent)
+n_parallel_envs = 4
+
+# Context summarization for models with limited context window
+# Enable for 8B models, disable for larger models with 32k+ context
 enable_summarize = true
-proactive_summarization_threshold = 8000
+proactive_summarization_threshold = 6000
 
-# vLLM connection (auto-configured by prime-rl)
+# vLLM connection - auto-configured by prime-rl inference server
 # vllm_base_url = "http://localhost:8000/v1"
 
-# Trial timeout (optional)
-# trial_timeout_sec = 600
+# Model name - must match [model] section
+model_name = "Qwen/Qwen3-8B"
+
+# Trial timeout in seconds (optional)
+# trial_timeout_sec = 600.0
+
+# Directory for trial logs and artifacts
+trials_dir = "/tmp/harbor-prime-rl"
 
 # Inference server configuration
 [inference]
-# Default inference config - prime-rl handles this
+# Reduce GPU memory utilization to fit 8B model on GPU 0
+# Increase if you have more VRAM or decrease for smaller GPUs
+gpu_memory_utilization = 0.6
+# Enable LoRA for weight updates during training
+enable_lora = true
 
