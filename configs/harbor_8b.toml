@@ -35,6 +35,11 @@ rank = 32
 alpha = 64
 
 # Training configuration
+[trainer.data]
+# Timeout for trainer to wait for rollouts from orchestrator
+# Increase for agent-based environments with Docker containers
+packer_timeout_seconds = 300
+
 [trainer.optim]
 lr = 1e-5
 
@@ -42,7 +47,7 @@ lr = 1e-5
 [orchestrator]
 # batch_size must be divisible by rollouts_per_example
 batch_size = 32
-rollouts_per_example = 4
+rollouts_per_example = 16
 # seq_len should accommodate multi-turn agent trajectories
 seq_len = 32768
 # max_concurrent controls parallel env generations

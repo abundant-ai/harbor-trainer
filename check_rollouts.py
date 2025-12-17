@@ -224,8 +224,13 @@ def print_summary(trials: list[dict], verbose: bool = False, show_stats: bool = 
         if task_stats:
             print("\n📊 TASK PERFORMANCE (attempts on each task):")
             print("-" * 80)
-            print(f"{'Task ID':<12} | {'Attempts':>8} | {'Passed':>6} | {'Failed':>6} | {'Success Rate':>12}")
+            print(f"{'Task ID':<12} | {'Attempts':>8} | {'Passed':>6} | {'Failed':>6} | {'Success Rate':>12} | {'Zero Adv?':>10}")
             print("-" * 80)
+            
+            # Categorize tasks by outcome uniformity (for advantage analysis)
+            all_pass_tasks = []
+            all_fail_tasks = []
+            mixed_tasks = []
             
             # Sort by success rate
             sorted_tasks = sorted(
@@ -237,7 +242,73 @@ def print_summary(trials: list[dict], verbose: bool = False, show_stats: bool = 
             for task_id, stats in sorted_tasks[:15]:  # Show top 15
                 attempts = stats["passed"] + stats["failed"]
                 success_rate = stats["passed"] / attempts * 100 if attempts > 0 else 0
-                print(f"{task_id:<12} | {attempts:>8} | {stats['passed']:>6} | {stats['failed']:>6} | {success_rate:>11.1f}%")
+                
+                # Check if all outcomes are the same (causes zero advantage)
+                zero_advantage = ""
+                if attempts >= 4:  # Only check if we have enough rollouts
+                    if stats["passed"] == attempts:
+                        zero_advantage = "⚠️  YES"
+                        all_pass_tasks.append(task_id)
+                    elif stats["failed"] == attempts:
+                        zero_advantage = "⚠️  YES"
+                        all_fail_tasks.append(task_id)
+                    else:
+                        mixed_tasks.append(task_id)
+                
+                print(f"{task_id:<12} | {attempts:>8} | {stats['passed']:>6} | {stats['failed']:>6} | {success_rate:>11.1f}% | {zero_advantage:>10}")
+            
+            # Zero advantage warning (critical for RL training)
+            print()
+            print("⚠️  ADVANTAGE ANALYSIS (for RL training):")
+            print("-" * 80)
+            
+            # Count all tasks with enough attempts
+            tasks_with_enough_attempts = {
+                task_id: stats for task_id, stats in task_stats.items()
+                if stats["passed"] + stats["failed"] >= 4
+            }
+            
+            if tasks_with_enough_attempts:
+                # Categorize all tasks
+                for task_id, stats in tasks_with_enough_attempts.items():
+                    attempts = stats["passed"] + stats["failed"]
+                    if task_id not in all_pass_tasks and task_id not in all_fail_tasks and task_id not in mixed_tasks:
+                        if stats["passed"] == attempts:
+                            all_pass_tasks.append(task_id)
+                        elif stats["failed"] == attempts:
+                            all_fail_tasks.append(task_id)
+                        else:
+                            mixed_tasks.append(task_id)
+                
+                total_analyzed = len(all_pass_tasks) + len(all_fail_tasks) + len(mixed_tasks)
+                zero_adv_count = len(all_pass_tasks) + len(all_fail_tasks)
+                
+                print(f"Tasks with 4+ rollouts: {total_analyzed}")
+                print(f"  • All rollouts PASSED (100% rate): {len(all_pass_tasks)} tasks")
+                print(f"  • All rollouts FAILED (0% rate):   {len(all_fail_tasks)} tasks")
+                print(f"  • Mixed outcomes:                   {len(mixed_tasks)} tasks")
+                print()
+                print(f"⚠️  ZERO ADVANTAGE: {zero_adv_count}/{total_analyzed} tasks ({zero_adv_count/total_analyzed*100:.1f}%)")
+                print()
+                print("When all rollouts for a task have the SAME outcome, the per-task")
+                print("advantage normalization produces zero advantages → zero loss → no learning!")
+                print()
+                
+                if zero_adv_count / total_analyzed > 0.3:
+                    print("💡 RECOMMENDATION: Consider one of these fixes:")
+                    print("   1. Set 'advantage = false' in config (use raw rewards)")
+                    print("   2. Increase temperature for more diverse outcomes per task")
+                    print("   3. Use global advantage normalization across batch")
+                
+                # Show examples
+                if len(all_pass_tasks) > 0:
+                    print(f"\n   Tasks where ALL pass: {', '.join(all_pass_tasks[:5])}")
+                    if len(all_pass_tasks) > 5:
+                        print(f"                         (+ {len(all_pass_tasks) - 5} more)")
+                if len(all_fail_tasks) > 0:
+                    print(f"   Tasks where ALL fail: {', '.join(all_fail_tasks[:5])}")
+                    if len(all_fail_tasks) > 5:
+                        print(f"                         (+ {len(all_fail_tasks) - 5} more)")
         
         # Duration distribution
         print("\n⏱️  DURATION ANALYSIS:")
